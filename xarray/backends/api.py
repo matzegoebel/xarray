@@ -1,5 +1,6 @@
 import os.path
 import warnings
+import os
 from glob import glob
 from io import BytesIO
 from numbers import Number
@@ -985,6 +986,7 @@ def to_netcdf(
     compute: bool = True,
     multifile: bool = False,
     invalid_netcdf: bool = False,
+    makedirs: bool = True,   
 ) -> Union[Tuple[ArrayWriter, AbstractDataStore], bytes, "Delayed", None]:
     """This function creates an appropriate datastore for writing a dataset to
     disk as a netCDF file
@@ -993,8 +995,12 @@ def to_netcdf(
 
     The ``multifile`` argument is only for the private use of save_mfdataset.
     """
+   
     if isinstance(path_or_file, Path):
         path_or_file = str(path_or_file)
+        if makedirs:
+            dirs = "/".join(path_or_file.split("/")[:-1])
+            os.makedirs(dirs, exist_ok=True)
 
     if encoding is None:
         encoding = {}

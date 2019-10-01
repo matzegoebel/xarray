@@ -81,6 +81,7 @@ class FacetGrid:
         aspect=1,
         size=3,
         subplot_kws=None,
+        gridspec_kw=None,
     ):
         """
         Parameters
@@ -165,6 +166,7 @@ class FacetGrid:
             squeeze=False,
             figsize=figsize,
             subplot_kw=subplot_kws,
+            gridspec_kw=gridspec_kw,
         )
 
         # Set up the lists of names for the row and column facet variables
@@ -588,6 +590,7 @@ def _easy_facetgrid(
     aspect=None,
     size=None,
     subplot_kws=None,
+    gridspec_kw=None,
     ax=None,
     figsize=None,
     **kwargs
@@ -617,6 +620,7 @@ def _easy_facetgrid(
         aspect=aspect,
         size=size,
         subplot_kws=subplot_kws,
+        gridspec_kw=gridspec_kw,
     )
 
     if kind == "line":
