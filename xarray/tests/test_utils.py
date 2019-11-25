@@ -1,4 +1,3 @@
-from collections import OrderedDict
 from datetime import datetime
 from typing import Hashable
 
@@ -10,7 +9,7 @@ from xarray.coding.cftimeindex import CFTimeIndex
 from xarray.core import duck_array_ops, utils
 from xarray.core.utils import either_dict_or_kwargs
 
-from . import assert_array_equal, has_cftime, has_cftime_or_netCDF4, requires_dask
+from . import assert_array_equal, requires_cftime, requires_dask
 from .test_coding_times import _all_cftime_date_types
 
 
@@ -40,17 +39,12 @@ def test_safe_cast_to_index():
         assert expected.dtype == actual.dtype
 
 
-@pytest.mark.skipif(not has_cftime_or_netCDF4, reason="cftime not installed")
+@requires_cftime
 def test_safe_cast_to_index_cftimeindex():
     date_types = _all_cftime_date_types()
     for date_type in date_types.values():
         dates = [date_type(1, 1, day) for day in range(1, 20)]
-
-        if has_cftime:
-            expected = CFTimeIndex(dates)
-        else:
-            expected = pd.Index(dates)
-
+        expected = CFTimeIndex(dates)
         actual = utils.safe_cast_to_index(np.array(dates))
         assert_array_equal(expected, actual)
         assert expected.dtype == actual.dtype
@@ -58,7 +52,7 @@ def test_safe_cast_to_index_cftimeindex():
 
 
 # Test that datetime.datetime objects are never used in a CFTimeIndex
-@pytest.mark.skipif(not has_cftime_or_netCDF4, reason="cftime not installed")
+@requires_cftime
 def test_safe_cast_to_index_datetime_datetime():
     dates = [datetime(1, 1, day) for day in range(1, 20)]
 
@@ -73,9 +67,7 @@ def test_multiindex_from_product_levels():
         [pd.Index(["b", "a"]), pd.Index([1, 3, 2])]
     )
     np.testing.assert_array_equal(
-        # compat for pandas < 0.24
-        result.codes if hasattr(result, "codes") else result.labels,
-        [[0, 0, 0, 1, 1, 1], [0, 1, 2, 0, 1, 2]],
+        result.codes, [[0, 0, 0, 1, 1, 1], [0, 1, 2, 0, 1, 2]]
     )
     np.testing.assert_array_equal(result.levels[0], ["b", "a"])
     np.testing.assert_array_equal(result.levels[1], [1, 3, 2])
@@ -89,9 +81,7 @@ def test_multiindex_from_product_levels_non_unique():
         [pd.Index(["b", "a"]), pd.Index([1, 1, 2])]
     )
     np.testing.assert_array_equal(
-        # compat for pandas < 0.24
-        result.codes if hasattr(result, "codes") else result.labels,
-        [[0, 0, 0, 1, 1, 1], [0, 0, 1, 0, 0, 1]],
+        result.codes, [[0, 0, 0, 1, 1, 1], [0, 0, 1, 0, 0, 1]]
     )
     np.testing.assert_array_equal(result.levels[0], ["b", "a"])
     np.testing.assert_array_equal(result.levels[1], [1, 2])
@@ -135,10 +125,10 @@ class TestDictionaries:
         assert {} == utils.ordered_dict_intersection(self.x, self.z)
 
     def test_dict_equiv(self):
-        x = OrderedDict()
+        x = {}
         x["a"] = 3
         x["b"] = np.array([1, 2, 3])
-        y = OrderedDict()
+        y = {}
         y["b"] = np.array([1.0, 2.0, 3.0])
         y["a"] = 3
         assert utils.dict_equiv(x, y)  # two nparrays are equal
@@ -280,3 +270,27 @@ def test_either_dict_or_kwargs():
 
     with pytest.raises(ValueError, match=r"foo"):
         result = either_dict_or_kwargs(dict(a=1), dict(a=1), "foo")
+
+
+@pytest.mark.parametrize(
+    ["supplied", "all_", "expected"],
+    [
+        (list("abc"), list("abc"), list("abc")),
+        (["a", ..., "c"], list("abc"), list("abc")),
+        (["a", ...], list("abc"), list("abc")),
+        (["c", ...], list("abc"), list("cab")),
+        ([..., "b"], list("abc"), list("acb")),
+        ([...], list("abc"), list("abc")),
+    ],
+)
+def test_infix_dims(supplied, all_, expected):
+    result = list(utils.infix_dims(supplied, all_))
+    assert result == expected
+
+
+@pytest.mark.parametrize(
+    ["supplied", "all_"], [([..., ...], list("abc")), ([...], list("aac"))]
+)
+def test_infix_dims_errors(supplied, all_):
+    with pytest.raises(ValueError):
+        list(utils.infix_dims(supplied, all_))

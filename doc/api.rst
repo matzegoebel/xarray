@@ -30,6 +30,7 @@ Top-level functions
    zeros_like
    ones_like
    dot
+   map_blocks
 
 Dataset
 =======
@@ -93,7 +94,7 @@ Dataset contents
    Dataset.rename_dims
    Dataset.swap_dims
    Dataset.expand_dims
-   Dataset.drop
+   Dataset.drop_vars
    Dataset.drop_dims
    Dataset.set_coords
    Dataset.reset_coords
@@ -117,6 +118,7 @@ Indexing
    Dataset.loc
    Dataset.isel
    Dataset.sel
+   Dataset.drop_sel
    Dataset.head
    Dataset.tail
    Dataset.thin
@@ -153,7 +155,7 @@ Computation
 .. autosummary::
    :toctree: generated/
 
-   Dataset.apply
+   Dataset.map
    Dataset.reduce
    Dataset.groupby
    Dataset.groupby_bins
@@ -262,7 +264,7 @@ DataArray contents
    DataArray.rename
    DataArray.swap_dims
    DataArray.expand_dims
-   DataArray.drop
+   DataArray.drop_vars
    DataArray.reset_coords
    DataArray.copy
 
@@ -282,6 +284,7 @@ Indexing
    DataArray.loc
    DataArray.isel
    DataArray.sel
+   DataArray.drop_sel
    DataArray.head
    DataArray.tail
    DataArray.thin
@@ -499,6 +502,8 @@ Dataset methods
    Dataset.persist
    Dataset.load
    Dataset.chunk
+   Dataset.unify_chunks
+   Dataset.map_blocks
    Dataset.filter_by_attrs
    Dataset.info
 
@@ -529,6 +534,8 @@ DataArray methods
    DataArray.persist
    DataArray.load
    DataArray.chunk
+   DataArray.unify_chunks
+   DataArray.map_blocks
 
 GroupBy objects
 ===============
@@ -537,10 +544,10 @@ GroupBy objects
    :toctree: generated/
 
    core.groupby.DataArrayGroupBy
-   core.groupby.DataArrayGroupBy.apply
+   core.groupby.DataArrayGroupBy.map
    core.groupby.DataArrayGroupBy.reduce
    core.groupby.DatasetGroupBy
-   core.groupby.DatasetGroupBy.apply
+   core.groupby.DatasetGroupBy.map
    core.groupby.DatasetGroupBy.reduce
 
 Rolling objects
@@ -561,7 +568,7 @@ Resample objects
 ================
 
 Resample objects also implement the GroupBy interface
-(methods like ``apply()``, ``reduce()``, ``mean()``, ``sum()``, etc.).
+(methods like ``map()``, ``reduce()``, ``mean()``, ``sum()``, etc.).
 
 .. autosummary::
    :toctree: generated/
@@ -609,8 +616,8 @@ Plotting
    :toctree: generated/
 
    Dataset.plot
+   plot.scatter
    DataArray.plot
-   Dataset.plot.scatter
    plot.plot
    plot.contourf
    plot.contour
@@ -629,6 +636,7 @@ Testing
    testing.assert_equal
    testing.assert_identical
    testing.assert_allclose
+   testing.assert_chunks_equal
 
 Exceptions
 ==========
@@ -667,3 +675,12 @@ arguments for the ``from_store`` and ``dump_to_store`` Dataset methods:
    backends.FileManager
    backends.CachingFileManager
    backends.DummyFileManager
+
+Deprecated / Pending Deprecation
+================================
+
+   Dataset.drop
+   DataArray.drop
+   Dataset.apply
+   core.groupby.DataArrayGroupBy.apply
+   core.groupby.DatasetGroupBy.apply

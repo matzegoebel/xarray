@@ -249,6 +249,7 @@ As an alternative, also a step plot similar to matplotlib's ``plt.step`` can be
 made using 1D data.
 
 .. ipython:: python
+    :okwarning:
 
     @savefig plotting_example_step.png width=4in
     air1d[:20].plot.step(where='mid')
@@ -781,7 +782,7 @@ coordinates.
 Multidimensional coordinates
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-See also: :ref:`examples.multidim`.
+See also: :ref:`/examples/multidimensional-coords.ipynb`.
 
 You can plot irregular grids defined by multidimensional coordinates with
 xarray, but you'll have to tell the plot function to use these coordinates

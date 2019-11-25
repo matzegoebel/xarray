@@ -6,6 +6,7 @@ from functools import partial
 
 import numpy as np
 import pandas as pd
+from pandas.errors import OutOfBoundsDatetime
 
 from ..core import indexing
 from ..core.common import contains_cftime_datetimes
@@ -20,13 +21,6 @@ from .variables import (
     unpack_for_decoding,
     unpack_for_encoding,
 )
-
-try:
-    from pandas.errors import OutOfBoundsDatetime
-except ImportError:
-    # pandas < 0.20
-    from pandas.tslib import OutOfBoundsDatetime
-
 
 # standard calendars recognized by cftime
 _STANDARD_CALENDARS = {"standard", "gregorian", "proleptic_gregorian"}
@@ -43,34 +37,6 @@ _NS_PER_TIME_DELTA = {
 TIME_UNITS = frozenset(
     ["days", "hours", "minutes", "seconds", "milliseconds", "microseconds"]
 )
-
-
-def _import_cftime():
-    """
-    helper function handle the transition to netcdftime/cftime
-    as a stand-alone package
-    """
-    try:
-        import cftime
-    except ImportError:
-        # in netCDF4 the num2date/date2num function are top-level api
-        try:
-            import netCDF4 as cftime
-        except ImportError:
-            raise ImportError("Failed to import cftime")
-    return cftime
-
-
-def _require_standalone_cftime():
-    """Raises an ImportError if the standalone cftime is not found"""
-    try:
-        import cftime  # noqa: F401
-    except ImportError:
-        raise ImportError(
-            "Decoding times with non-standard calendars "
-            "or outside the pandas.Timestamp-valid range "
-            "requires the standalone cftime package."
-        )
 
 
 def _netcdf_to_numpy_timeunit(units):
@@ -125,16 +91,11 @@ def _decode_cf_datetime_dtype(data, units, calendar, use_cftime):
 
 
 def _decode_datetime_with_cftime(num_dates, units, calendar):
-    cftime = _import_cftime()
+    import cftime
 
-    if cftime.__name__ == "cftime":
-        return np.asarray(
-            cftime.num2date(num_dates, units, calendar, only_use_cftime_datetimes=True)
-        )
-    else:
-        # Must be using num2date from an old version of netCDF4 which
-        # does not have the only_use_cftime_datetimes option.
-        return np.asarray(cftime.num2date(num_dates, units, calendar))
+    return np.asarray(
+        cftime.num2date(num_dates, units, calendar, only_use_cftime_datetimes=True)
+    )
 
 
 def _decode_datetime_with_pandas(flat_num_dates, units, calendar):
@@ -292,7 +253,7 @@ def infer_datetime_units(dates):
         # NumPy casting bug: https://github.com/numpy/numpy/issues/11096
         unique_timedeltas = to_timedelta_unboxed(unique_timedeltas)
     units = _infer_time_units_from_diff(unique_timedeltas)
-    return "%s since %s" % (units, reference_date)
+    return f"{units} since {reference_date}"
 
 
 def format_cftime_datetime(date):
@@ -347,7 +308,7 @@ def cftime_to_nptime(times):
 def _cleanup_netcdf_time_units(units):
     delta, ref_date = _unpack_netcdf_time_units(units)
     try:
-        units = "%s since %s" % (delta, format_timestamp(ref_date))
+        units = "{} since {}".format(delta, format_timestamp(ref_date))
     except OutOfBoundsDatetime:
         # don't worry about reifying the units if they're out of bounds
         pass
@@ -360,7 +321,7 @@ def _encode_datetime_with_cftime(dates, units, calendar):
     This method is more flexible than xarray's parsing using datetime64[ns]
     arrays but also slower because it loops over each element.
     """
-    cftime = _import_cftime()
+    import cftime
 
     if np.issubdtype(dates.dtype, np.datetime64):
         # numpy's broken datetime conversion only works for us precision

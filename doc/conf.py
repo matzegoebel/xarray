@@ -76,7 +76,7 @@ extensions = [
     "numpydoc",
     "IPython.sphinxext.ipython_directive",
     "IPython.sphinxext.ipython_console_highlighting",
-    "sphinx_gallery.gen_gallery",
+    "nbsphinx",
 ]
 
 extlinks = {
@@ -84,12 +84,16 @@ extlinks = {
     "pull": ("https://github.com/pydata/xarray/pull/%s", "PR"),
 }
 
-sphinx_gallery_conf = {
-    "examples_dirs": "gallery",
-    "gallery_dirs": "auto_gallery",
-    "backreferences_dir": False,
-    "expected_failing_examples": list(allowed_failures),
-}
+nbsphinx_timeout = 600
+nbsphinx_execute = "always"
+nbsphinx_prolog = """
+{% set docname = env.doc2path(env.docname, base=None) %}
+
+You can run this notebook in a `live session <https://mybinder.org/v2/gh/pydata/xarray/doc/examples/master?urlpath=lab/tree/doc/{{ docname }}>`_ |Binder| or view it `on Github <https://github.com/pydata/xarray/blob/master/doc/{{ docname }}>`_.
+
+.. |Binder| image:: https://mybinder.org/badge.svg
+   :target: https://mybinder.org/v2/gh/pydata/xarray/master?urlpath=lab/tree/doc/{{ docname }}
+"""
 
 autosummary_generate = True
 autodoc_typehints = "none"
@@ -137,7 +141,7 @@ today_fmt = "%Y-%m-%d"
 
 # List of patterns, relative to source directory, that match files and
 # directories to ignore when looking for source files.
-exclude_patterns = ["_build"]
+exclude_patterns = ["_build", "**.ipynb_checkpoints"]
 
 # The reST default role (used for this markup: `text`) to use for all
 # documents.
@@ -201,7 +205,7 @@ html_static_path = ["_static"]
 
 # Sometimes the savefig directory doesn't exist and needs to be created
 # https://github.com/ipython/ipython/issues/8733
-# becomes obsolete when we can pin ipython>=5.2; see doc/environment.yml
+# becomes obsolete when we can pin ipython>=5.2; see ci/requirements/doc.yml
 ipython_savefig_dir = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "_build", "html", "_static"
 )
@@ -340,9 +344,11 @@ texinfo_documents = [
 # Example configuration for intersphinx: refer to the Python standard library.
 intersphinx_mapping = {
     "python": ("https://docs.python.org/3/", None),
-    "pandas": ("https://pandas.pydata.org/pandas-docs/stable/", None),
-    "iris": ("http://scitools.org.uk/iris/docs/latest/", None),
-    "numpy": ("https://docs.scipy.org/doc/numpy/", None),
-    "numba": ("https://numba.pydata.org/numba-doc/latest/", None),
-    "matplotlib": ("https://matplotlib.org/", None),
+    "pandas": ("https://pandas.pydata.org/pandas-docs/stable", None),
+    "iris": ("https://scitools.org.uk/iris/docs/latest", None),
+    "numpy": ("https://docs.scipy.org/doc/numpy", None),
+    "scipy": ("https://docs.scipy.org/doc/scipy/reference", None),
+    "numba": ("https://numba.pydata.org/numba-doc/latest", None),
+    "matplotlib": ("https://matplotlib.org", None),
+    "dask": ("https://docs.dask.org/en/latest", None),
 }

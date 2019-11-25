@@ -25,7 +25,6 @@ from . import (
     raises_regex,
     requires_cftime,
     requires_matplotlib,
-    requires_matplotlib2,
     requires_nc_time_axis,
     requires_seaborn,
 )
@@ -360,7 +359,6 @@ class TestPlot(PlotTestCase):
             d[0].plot(x="x", y="y", col="z", ax=plt.gca())
 
     @pytest.mark.slow
-    @requires_matplotlib2
     def test_subplot_kws(self):
         a = easy_array((10, 15, 4))
         d = DataArray(a, dims=["y", "x", "z"])
@@ -419,7 +417,7 @@ class TestPlot(PlotTestCase):
 
     def test_coord_with_interval(self):
         bins = [-1, 0, 1, 2]
-        self.darray.groupby_bins("dim_0", bins).mean(xr.ALL_DIMS).plot()
+        self.darray.groupby_bins("dim_0", bins).mean(...).plot()
 
 
 class TestPlot1D(PlotTestCase):
@@ -504,7 +502,7 @@ class TestPlotStep(PlotTestCase):
 
     def test_coord_with_interval_step(self):
         bins = [-1, 0, 1, 2]
-        self.darray.groupby_bins("dim_0", bins).mean(xr.ALL_DIMS).plot.step()
+        self.darray.groupby_bins("dim_0", bins).mean(...).plot.step()
         assert len(plt.gca().lines[0].get_xdata()) == ((len(bins) - 1) * 2)
 
 
@@ -546,7 +544,7 @@ class TestPlotHistogram(PlotTestCase):
     def test_hist_coord_with_interval(self):
         (
             self.darray.groupby_bins("dim_0", [-1, 0, 1, 2])
-            .mean(xr.ALL_DIMS)
+            .mean(...)
             .plot.hist(range=(-1, 2))
         )
 
@@ -1546,7 +1544,7 @@ class TestFacetGrid(PlotTestCase):
         self.darray.name = "testvar"
         self.g.map_dataarray(xplt.contourf, "x", "y")
         for k, ax in zip("abc", self.g.axes.flat):
-            assert "z = {}".format(k) == ax.get_title()
+            assert f"z = {k}" == ax.get_title()
 
         alltxt = text_in_fig()
         assert self.darray.name in alltxt
@@ -1839,7 +1837,11 @@ class TestFacetedLinePlots(PlotTestCase):
             assert substring_in_axes(self.darray.name, ax)
 
     def test_test_empty_cell(self):
-        g = self.darray.isel(row=1).drop("row").plot(col="col", hue="hue", col_wrap=2)
+        g = (
+            self.darray.isel(row=1)
+            .drop_vars("row")
+            .plot(col="col", hue="hue", col_wrap=2)
+        )
         bottomright = g.axes[-1, -1]
         assert not bottomright.has_data()
         assert not bottomright.get_visible()
@@ -1962,10 +1964,11 @@ class TestDatasetScatterPlots(PlotTestCase):
         ds2.plot.scatter(x="A", y="B", hue="hue", hue_style=hue_style)
 
     def test_facetgrid_hue_style(self):
-        # Can't move this to pytest.mark.parametrize because py35-bare-minimum
-        # doesn't have mpl.
-        for hue_style, map_type in zip(
-            ["discrete", "continuous"], [list, mpl.collections.PathCollection]
+        # Can't move this to pytest.mark.parametrize because py36-bare-minimum
+        # doesn't have matplotlib.
+        for hue_style, map_type in (
+            ("discrete", list),
+            ("continuous", mpl.collections.PathCollection),
         ):
             g = self.ds.plot.scatter(
                 x="A", y="B", row="row", col="col", hue="hue", hue_style=hue_style

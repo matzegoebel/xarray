@@ -65,8 +65,7 @@ For datasets containing dask arrays where the data should be lazily loaded, see 
 
 To create a ``Dataset`` from a ``DataFrame``, use the
 :py:meth:`~xarray.Dataset.from_dataframe` class method or the equivalent
-:py:meth:`pandas.DataFrame.to_xarray <DataFrame.to_xarray>` method (pandas
-v0.18 or later):
+:py:meth:`pandas.DataFrame.to_xarray <DataFrame.to_xarray>` method:
 
 .. ipython:: python
 
@@ -113,7 +112,7 @@ automatically stacking them into a ``MultiIndex``.
 :py:meth:`DataArray.to_pandas() <xarray.DataArray.to_pandas>` is a shortcut that
 lets you convert a DataArray directly into a pandas object with the same
 dimensionality (i.e., a 1D array is converted to a :py:class:`~pandas.Series`,
-2D to :py:class:`~pandas.DataFrame` and 3D to :py:class:`~pandas.Panel`):
+2D to :py:class:`~pandas.DataFrame` and 3D to ``pandas.Panel``):
 
 .. ipython:: python
 

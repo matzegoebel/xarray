@@ -4,13 +4,14 @@ Functions for applying functions that act on arrays to xarray's labeled data.
 import functools
 import itertools
 import operator
-from collections import Counter, OrderedDict
-from distutils.version import LooseVersion
+from collections import Counter
 from typing import (
     TYPE_CHECKING,
     AbstractSet,
     Any,
     Callable,
+    Dict,
+    Hashable,
     Iterable,
     List,
     Mapping,
@@ -24,15 +25,15 @@ import numpy as np
 
 from . import duck_array_ops, utils
 from .alignment import deep_align
-from .merge import expand_and_merge_variables
+from .merge import merge_coordinates_without_align
 from .pycompat import dask_array_type
 from .utils import is_dict_like
 from .variable import Variable
 
 if TYPE_CHECKING:
+    from .coordinates import Coordinates  # noqa
     from .dataset import Dataset
 
-_DEFAULT_FROZEN_SET = frozenset()  # type: frozenset
 _NO_FILL_VALUE = utils.ReprObject("<no-fill-value>")
 _DEFAULT_NAME = utils.ReprObject("<default-name>")
 _JOINS_WITHOUT_FILL_VALUES = frozenset({"inner", "exact"})
@@ -109,16 +110,14 @@ class _UFuncSignature:
         return not self == other
 
     def __repr__(self):
-        return "%s(%r, %r)" % (
-            type(self).__name__,
-            list(self.input_core_dims),
-            list(self.output_core_dims),
+        return "{}({!r}, {!r})".format(
+            type(self).__name__, list(self.input_core_dims), list(self.output_core_dims)
         )
 
     def __str__(self):
         lhs = ",".join("({})".format(",".join(dims)) for dims in self.input_core_dims)
         rhs = ",".join("({})".format(",".join(dims)) for dims in self.output_core_dims)
-        return "{}->{}".format(lhs, rhs)
+        return f"{lhs}->{rhs}"
 
     def to_gufunc_string(self):
         """Create an equivalent signature string for a NumPy gufunc.
@@ -146,28 +145,27 @@ def result_name(objects: list) -> Any:
     names = {getattr(obj, "name", _DEFAULT_NAME) for obj in objects}
     names.discard(_DEFAULT_NAME)
     if len(names) == 1:
-        name, = names
+        (name,) = names
     else:
         name = None
     return name
 
 
-def _get_coord_variables(args):
-    input_coords = []
+def _get_coords_list(args) -> List["Coordinates"]:
+    coords_list = []
     for arg in args:
         try:
             coords = arg.coords
         except AttributeError:
             pass  # skip this argument
         else:
-            coord_vars = getattr(coords, "variables", coords)
-            input_coords.append(coord_vars)
-    return input_coords
+            coords_list.append(coords)
+    return coords_list
 
 
 def build_output_coords(
     args: list, signature: _UFuncSignature, exclude_dims: AbstractSet = frozenset()
-) -> "List[OrderedDict[Any, Variable]]":
+) -> "List[Dict[Any, Variable]]":
     """Build output coordinates for an operation.
 
     Parameters
@@ -183,34 +181,29 @@ def build_output_coords(
 
     Returns
     -------
-    OrderedDict of Variable objects with merged coordinates.
+    Dictionary of Variable objects with merged coordinates.
     """
-    input_coords = _get_coord_variables(args)
+    coords_list = _get_coords_list(args)
 
-    if exclude_dims:
-        input_coords = [
-            OrderedDict(
-                (k, v) for k, v in coord_vars.items() if exclude_dims.isdisjoint(v.dims)
-            )
-            for coord_vars in input_coords
-        ]
-
-    if len(input_coords) == 1:
+    if len(coords_list) == 1 and not exclude_dims:
         # we can skip the expensive merge
-        unpacked_input_coords, = input_coords
-        merged = OrderedDict(unpacked_input_coords)
+        (unpacked_coords,) = coords_list
+        merged_vars = dict(unpacked_coords.variables)
     else:
-        merged = expand_and_merge_variables(input_coords)
+        # TODO: save these merged indexes, instead of re-computing them later
+        merged_vars, unused_indexes = merge_coordinates_without_align(
+            coords_list, exclude_dims=exclude_dims
+        )
 
     output_coords = []
     for output_dims in signature.output_core_dims:
         dropped_dims = signature.all_input_core_dims - set(output_dims)
         if dropped_dims:
-            filtered = OrderedDict(
-                (k, v) for k, v in merged.items() if dropped_dims.isdisjoint(v.dims)
-            )
+            filtered = {
+                k: v for k, v in merged_vars.items() if dropped_dims.isdisjoint(v.dims)
+            }
         else:
-            filtered = merged
+            filtered = merged_vars
         output_coords.append(filtered)
 
     return output_coords
@@ -244,18 +237,14 @@ def apply_dataarray_vfunc(
             for variable, coords in zip(result_var, result_coords)
         )
     else:
-        coords, = result_coords
+        (coords,) = result_coords
         out = DataArray(result_var, coords, name=name, fastpath=True)
 
     return out
 
 
 def ordered_set_union(all_keys: List[Iterable]) -> Iterable:
-    result_dict = OrderedDict()  # type: OrderedDict[Any, None]
-    for keys in all_keys:
-        for key in keys:
-            result_dict[key] = None
-    return result_dict.keys()
+    return {key: None for keys in all_keys for key in keys}.keys()
 
 
 def ordered_set_intersection(all_keys: List[Iterable]) -> Iterable:
@@ -313,9 +302,9 @@ def _as_variables_or_variable(arg):
 
 
 def _unpack_dict_tuples(
-    result_vars: Mapping[Any, Tuple[Variable]], num_outputs: int
-) -> "Tuple[OrderedDict[Any, Variable], ...]":
-    out = tuple(OrderedDict() for _ in range(num_outputs))  # type: ignore
+    result_vars: Mapping[Hashable, Tuple[Variable, ...]], num_outputs: int
+) -> Tuple[Dict[Hashable, Variable], ...]:
+    out = tuple({} for _ in range(num_outputs))  # type: ignore
     for name, values in result_vars.items():
         for value, results_dict in zip(values, out):
             results_dict[name] = value
@@ -332,7 +321,7 @@ def apply_dict_of_variables_vfunc(
     names = join_dict_keys(args, how=join)
     grouped_by_name = collect_dict_values(args, names, fill_value)
 
-    result_vars = OrderedDict()
+    result_vars = {}
     for name, variable_args in zip(names, grouped_by_name):
         result_vars[name] = func(*variable_args)
 
@@ -343,17 +332,17 @@ def apply_dict_of_variables_vfunc(
 
 
 def _fast_dataset(
-    variables: "OrderedDict[Any, Variable]", coord_variables: Mapping[Any, Variable]
+    variables: Dict[Hashable, Variable], coord_variables: Mapping[Hashable, Variable]
 ) -> "Dataset":
     """Create a dataset as quickly as possible.
 
-    Beware: the `variables` OrderedDict is modified INPLACE.
+    Beware: the `variables` dict is modified INPLACE.
     """
     from .dataset import Dataset
 
     variables.update(coord_variables)
     coord_names = set(coord_variables)
-    return Dataset._from_vars_and_coord_names(variables, coord_names)
+    return Dataset._construct_direct(variables, coord_names)
 
 
 def apply_dataset_vfunc(
@@ -364,7 +353,7 @@ def apply_dataset_vfunc(
     dataset_join="exact",
     fill_value=_NO_FILL_VALUE,
     exclude_dims=frozenset(),
-    keep_attrs=False
+    keep_attrs=False,
 ):
     """Apply a variable level function over Dataset, dict of DataArray,
     DataArray, Variable and/or ndarray objects.
@@ -395,7 +384,7 @@ def apply_dataset_vfunc(
     if signature.num_outputs > 1:
         out = tuple(_fast_dataset(*args) for args in zip(result_vars, list_of_coords))
     else:
-        coord_vars, = list_of_coords
+        (coord_vars,) = list_of_coords
         out = _fast_dataset(result_vars, coord_vars)
 
     if keep_attrs and isinstance(first_obj, Dataset):
@@ -469,9 +458,9 @@ def apply_groupby_func(func, *args):
 
 def unified_dim_sizes(
     variables: Iterable[Variable], exclude_dims: AbstractSet = frozenset()
-) -> "OrderedDict[Any, int]":
+) -> Dict[Hashable, int]:
 
-    dim_sizes = OrderedDict()  # type: OrderedDict[Any, int]
+    dim_sizes: Dict[Hashable, int] = {}
 
     for var in variables:
         if len(set(var.dims)) < len(var.dims):
@@ -495,8 +484,11 @@ def unified_dim_sizes(
 SLICE_NONE = slice(None)
 
 
-def broadcast_compat_data(variable, broadcast_dims, core_dims):
-    # type: (Variable, tuple, tuple) -> Any
+def broadcast_compat_data(
+    variable: Variable,
+    broadcast_dims: Tuple[Hashable, ...],
+    core_dims: Tuple[Hashable, ...],
+) -> Any:
     data = variable.data
 
     old_dims = variable.dims
@@ -554,7 +546,7 @@ def apply_variable_ufunc(
     dask="forbidden",
     output_dtypes=None,
     output_sizes=None,
-    keep_attrs=False
+    keep_attrs=False,
 ):
     """Apply a ndarray level function over Variable and/or ndarray objects.
     """
@@ -657,7 +649,7 @@ def apply_variable_ufunc(
 def _apply_blockwise(
     func, args, input_dims, output_dims, signature, output_dtypes, output_sizes=None
 ):
-    from .dask_array_compat import blockwise
+    import dask.array
 
     if signature.num_outputs > 1:
         raise NotImplementedError(
@@ -720,13 +712,13 @@ def _apply_blockwise(
         trimmed_dims = dims[-ndim:] if ndim else ()
         blockwise_args.extend([arg, trimmed_dims])
 
-    return blockwise(
+    return dask.array.blockwise(
         func,
         out_ind,
         *blockwise_args,
         dtype=dtype,
         concatenate=True,
-        new_axes=output_sizes
+        new_axes=output_sizes,
     )
 
 
@@ -749,7 +741,7 @@ def apply_array_ufunc(func, *args, dask="forbidden"):
         elif dask == "allowed":
             pass
         else:
-            raise ValueError("unknown setting for dask array handling: {}".format(dask))
+            raise ValueError(f"unknown setting for dask array handling: {dask}")
     return func(*args)
 
 
@@ -767,7 +759,7 @@ def apply_ufunc(
     kwargs: Mapping = None,
     dask: str = "forbidden",
     output_dtypes: Sequence = None,
-    output_sizes: Mapping[Any, int] = None
+    output_sizes: Mapping[Any, int] = None,
 ) -> Any:
     """Apply a vectorized function for unlabeled arrays on xarray objects.
 
@@ -892,7 +884,7 @@ def apply_ufunc(
     Plain scalars, numpy arrays and a mix of these with xarray objects is also
     supported:
 
-    >>> magnitude(4, 5)
+    >>> magnitude(3, 4)
     5.0
     >>> magnitude(3, np.array([0, 4]))
     array([3., 5.])
@@ -955,7 +947,7 @@ def apply_ufunc(
     appropriately for use in `apply`. You may find helper functions such as
     numpy.broadcast_arrays helpful in writing your function. `apply_ufunc` also
     works well with numba's vectorize and guvectorize. Further explanation with
-    examples are provided in the xarray documentation [3].
+    examples are provided in the xarray documentation [3]_.
 
     See also
     --------
@@ -998,13 +990,6 @@ def apply_ufunc(
 
     if vectorize:
         if signature.all_core_dims:
-            # we need the signature argument
-            if LooseVersion(np.__version__) < "1.12":  # pragma: no cover
-                raise NotImplementedError(
-                    "numpy 1.12 or newer required when using vectorize=True "
-                    "in xarray.apply_ufunc with non-scalar output core "
-                    "dimensions."
-                )
             func = np.vectorize(
                 func, otypes=output_dtypes, signature=signature.to_gufunc_string()
             )
@@ -1045,7 +1030,7 @@ def apply_ufunc(
             exclude_dims=exclude_dims,
             dataset_join=dataset_join,
             fill_value=dataset_fill_value,
-            keep_attrs=keep_attrs
+            keep_attrs=keep_attrs,
         )
     elif any(isinstance(a, DataArray) for a in args):
         return apply_dataarray_vfunc(
@@ -1054,7 +1039,7 @@ def apply_ufunc(
             signature=signature,
             join=join,
             exclude_dims=exclude_dims,
-            keep_attrs=keep_attrs
+            keep_attrs=keep_attrs,
         )
     elif any(isinstance(a, Variable) for a in args):
         return variables_vfunc(*args)
@@ -1070,9 +1055,9 @@ def dot(*arrays, dims=None, **kwargs):
     ----------
     arrays: DataArray (or Variable) objects
         Arrays to compute.
-    dims: str or tuple of strings, optional
-        Which dimensions to sum over.
-        If not speciified, then all the common dimensions are summed over.
+    dims: '...', str or tuple of strings, optional
+        Which dimensions to sum over. Ellipsis ('...') sums over all dimensions.
+        If not specified, then all the common dimensions are summed over.
     **kwargs: dict
         Additional keyword arguments passed to numpy.einsum or
         dask.array.einsum
@@ -1085,7 +1070,7 @@ def dot(*arrays, dims=None, **kwargs):
     --------
 
     >>> import numpy as np
-    >>> import xarray as xp
+    >>> import xarray as xr
     >>> da_a = xr.DataArray(np.arange(3 * 2).reshape(3, 2), dims=['a', 'b'])
     >>> da_b = xr.DataArray(np.arange(3 * 2 * 2).reshape(3, 2, 2),
     ...                     dims=['a', 'b', 'c'])
@@ -1132,6 +1117,14 @@ def dot(*arrays, dims=None, **kwargs):
            [273, 446, 619]])
     Dimensions without coordinates: a, d
 
+    >>> xr.dot(da_a, da_b)
+    <xarray.DataArray (c: 2)>
+    array([110, 125])
+    Dimensions without coordinates: c
+
+    >>> xr.dot(da_a, da_b, dims=...)
+    <xarray.DataArray ()>
+    array(235)
     """
     from .dataarray import DataArray
     from .variable import Variable
@@ -1156,7 +1149,9 @@ def dot(*arrays, dims=None, **kwargs):
     einsum_axes = "abcdefghijklmnopqrstuvwxyz"
     dim_map = {d: einsum_axes[i] for i, d in enumerate(all_dims)}
 
-    if dims is None:
+    if dims is ...:
+        dims = all_dims
+    elif dims is None:
         # find dimensions that occur more than one times
         dim_counts = Counter()
         for arr in arrays:
@@ -1171,25 +1166,6 @@ def dot(*arrays, dims=None, **kwargs):
         [d for d in arr.dims if d not in broadcast_dims] for arr in arrays
     ]
     output_core_dims = [tuple(d for d in all_dims if d not in dims + broadcast_dims)]
-
-    # older dask than 0.17.4, we use tensordot if possible.
-    if isinstance(arr.data, dask_array_type):
-        import dask
-
-        if LooseVersion(dask.__version__) < LooseVersion("0.17.4"):
-            if len(broadcast_dims) == 0 and len(arrays) == 2:
-                axes = [
-                    [arr.get_axis_num(d) for d in arr.dims if d in dims]
-                    for arr in arrays
-                ]
-                return apply_ufunc(
-                    duck_array_ops.tensordot,
-                    *arrays,
-                    dask="allowed",
-                    input_core_dims=input_core_dims,
-                    output_core_dims=output_core_dims,
-                    kwargs={"axes": axes}
-                )
 
     # construct einsum subscripts, such as '...abc,...ab->...c'
     # Note: input_core_dims are always moved to the last position
@@ -1207,7 +1183,7 @@ def dot(*arrays, dims=None, **kwargs):
         *arrays,
         input_core_dims=input_core_dims,
         output_core_dims=output_core_dims,
-        dask="allowed"
+        dask="allowed",
     )
     return result.transpose(*[d for d in all_dims if d in result.dims])
 

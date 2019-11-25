@@ -17,10 +17,8 @@ from .pycompat import dask_array_type
 
 try:
     import dask.array as dask_array
-    from . import dask_array_compat
 except ImportError:
     dask_array = None  # type: ignore
-    dask_array_compat = None  # type: ignore
 
 
 def _dask_or_eager_func(
@@ -43,7 +41,7 @@ def _dask_or_eager_func(
                 try:
                     wrapped = getattr(dask_module, name)
                 except AttributeError as e:
-                    raise AttributeError("%s: requires dask >=%s" % (e, requires_dask))
+                    raise AttributeError(f"{e}: requires dask >={requires_dask}")
             else:
                 wrapped = getattr(eager_module, name)
             return wrapped(*args, **kwargs)
@@ -120,9 +118,7 @@ def notnull(data):
 
 transpose = _dask_or_eager_func("transpose")
 _where = _dask_or_eager_func("where", array_args=slice(3))
-isin = _dask_or_eager_func(
-    "isin", eager_module=npcompat, dask_module=dask_array_compat, array_args=slice(2)
-)
+isin = _dask_or_eager_func("isin", array_args=slice(2))
 take = _dask_or_eager_func("take")
 broadcast_to = _dask_or_eager_func("broadcast_to")
 
@@ -133,15 +129,13 @@ array_all = _dask_or_eager_func("all")
 array_any = _dask_or_eager_func("any")
 
 tensordot = _dask_or_eager_func("tensordot", array_args=slice(2))
-einsum = _dask_or_eager_func(
-    "einsum", array_args=slice(1, None), requires_dask="0.17.3"
-)
+einsum = _dask_or_eager_func("einsum", array_args=slice(1, None))
 
 
 def gradient(x, coord, axis, edge_order):
     if isinstance(x, dask_array_type):
-        return dask_array_compat.gradient(x, coord, axis=axis, edge_order=edge_order)
-    return npcompat.gradient(x, coord, axis=axis, edge_order=edge_order)
+        return dask_array.gradient(x, coord, axis=axis, edge_order=edge_order)
+    return np.gradient(x, coord, axis=axis, edge_order=edge_order)
 
 
 def trapz(y, x, axis):
@@ -180,14 +174,42 @@ def as_shared_dtype(scalars_or_arrays):
     return [x.astype(out_type, copy=False) for x in arrays]
 
 
+def lazy_array_equiv(arr1, arr2):
+    """Like array_equal, but doesn't actually compare values.
+       Returns True when arr1, arr2 identical or their dask names are equal.
+       Returns False when shapes are not equal.
+       Returns None when equality cannot determined: one or both of arr1, arr2 are numpy arrays;
+       or their dask names are not equal
+    """
+    if arr1 is arr2:
+        return True
+    arr1 = asarray(arr1)
+    arr2 = asarray(arr2)
+    if arr1.shape != arr2.shape:
+        return False
+    if (
+        dask_array
+        and isinstance(arr1, dask_array.Array)
+        and isinstance(arr2, dask_array.Array)
+    ):
+        # GH3068
+        if arr1.name == arr2.name:
+            return True
+        else:
+            return None
+    return None
+
+
 def allclose_or_equiv(arr1, arr2, rtol=1e-5, atol=1e-8):
     """Like np.allclose, but also allows values to be NaN in both arrays
     """
     arr1 = asarray(arr1)
     arr2 = asarray(arr2)
-    if arr1.shape != arr2.shape:
-        return False
-    return bool(isclose(arr1, arr2, rtol=rtol, atol=atol, equal_nan=True).all())
+    lazy_equiv = lazy_array_equiv(arr1, arr2)
+    if lazy_equiv is None:
+        return bool(isclose(arr1, arr2, rtol=rtol, atol=atol, equal_nan=True).all())
+    else:
+        return lazy_equiv
 
 
 def array_equiv(arr1, arr2):
@@ -195,12 +217,14 @@ def array_equiv(arr1, arr2):
     """
     arr1 = asarray(arr1)
     arr2 = asarray(arr2)
-    if arr1.shape != arr2.shape:
-        return False
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", "In the future, 'NAT == x'")
-        flag_array = (arr1 == arr2) | (isnull(arr1) & isnull(arr2))
-        return bool(flag_array.all())
+    lazy_equiv = lazy_array_equiv(arr1, arr2)
+    if lazy_equiv is None:
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", "In the future, 'NAT == x'")
+            flag_array = (arr1 == arr2) | (isnull(arr1) & isnull(arr2))
+            return bool(flag_array.all())
+    else:
+        return lazy_equiv
 
 
 def array_notnull_equiv(arr1, arr2):
@@ -209,12 +233,14 @@ def array_notnull_equiv(arr1, arr2):
     """
     arr1 = asarray(arr1)
     arr2 = asarray(arr2)
-    if arr1.shape != arr2.shape:
-        return False
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", "In the future, 'NAT == x'")
-        flag_array = (arr1 == arr2) | isnull(arr1) | isnull(arr2)
-        return bool(flag_array.all())
+    lazy_equiv = lazy_array_equiv(arr1, arr2)
+    if lazy_equiv is None:
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", "In the future, 'NAT == x'")
+            flag_array = (arr1 == arr2) | isnull(arr1) | isnull(arr2)
+            return bool(flag_array.all())
+    else:
+        return lazy_equiv
 
 
 def count(data, axis=None):
@@ -263,7 +289,7 @@ def _create_nan_agg_method(name, coerce_strings=False):
 
     def f(values, axis=None, skipna=None, **kwargs):
         if kwargs.pop("out", None) is not None:
-            raise TypeError("`out` is not valid for {}".format(name))
+            raise TypeError(f"`out` is not valid for {name}")
 
         values = asarray(values)
 
@@ -325,6 +351,26 @@ cumsum_1d.numeric_only = True
 _mean = _create_nan_agg_method("mean")
 
 
+def _datetime_nanmin(array):
+    """nanmin() function for datetime64.
+
+    Caveats that this function deals with:
+
+    - In numpy < 1.18, min() on datetime64 incorrectly ignores NaT
+    - numpy nanmin() don't work on datetime64 (all versions at the moment of writing)
+    - dask min() does not work on datetime64 (all versions at the moment of writing)
+    """
+    assert array.dtype.kind in "mM"
+    dtype = array.dtype
+    # (NaT).astype(float) does not produce NaN...
+    array = where(pandas_isnull(array), np.nan, array.astype(float))
+    array = min(array, skipna=True)
+    if isinstance(array, float):
+        array = np.array(array)
+    # ...but (NaN).astype("M8") does produce NaT
+    return array.astype(dtype)
+
+
 def datetime_to_numeric(array, offset=None, datetime_unit=None, dtype=float):
     """Convert an array containing datetime-like data to an array of floats.
 
@@ -344,7 +390,10 @@ def datetime_to_numeric(array, offset=None, datetime_unit=None, dtype=float):
     """
     # TODO: make this function dask-compatible?
     if offset is None:
-        offset = array.min()
+        if array.dtype.kind in "Mm":
+            offset = _datetime_nanmin(array)
+        else:
+            offset = min(array)
     array = array - offset
 
     if not hasattr(array, "dtype"):  # scalar is converted to 0d-array
@@ -375,7 +424,8 @@ def mean(array, axis=None, skipna=None, **kwargs):
 
     array = asarray(array)
     if array.dtype.kind in "Mm":
-        offset = min(array)
+        offset = _datetime_nanmin(array)
+
         # xarray always uses np.datetime64[ns] for np.datetime64 data
         dtype = "timedelta64[ns]"
         return (

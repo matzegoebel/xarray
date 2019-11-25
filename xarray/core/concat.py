@@ -1,10 +1,9 @@
-from collections import OrderedDict
-
 import pandas as pd
 
 from . import dtypes, utils
 from .alignment import align
-from .merge import unique_variable, _VALID_COMPAT
+from .duck_array_ops import lazy_array_equiv
+from .merge import _VALID_COMPAT, unique_variable
 from .variable import IndexVariable, Variable, as_variable
 from .variable import concat as concat_vars
 
@@ -46,6 +45,7 @@ def concat(
           * 'all': All data variables will be concatenated.
           * list of str: The listed data variables will be concatenated, in
             addition to the 'minimal' data variables.
+
         If objects are DataArrays, data_vars must be 'all'.
     coords : {'minimal', 'different', 'all' or list of str}, optional
         These coordinate variables will be concatenated together:
@@ -150,10 +150,10 @@ def _calc_concat_dim_coord(dim):
         dim = dim_name
     elif not isinstance(dim, DataArray):
         coord = as_variable(dim).to_index_variable()
-        dim, = coord.dims
+        (dim,) = coord.dims
     else:
         coord = dim
-        dim, = coord.dims
+        (dim,) = coord.dims
     return dim, coord
 
 
@@ -177,8 +177,6 @@ def _calc_concat_over(datasets, dim, dim_names, data_vars, coords, compat):
             if dim not in ds.dims:
                 if dim in ds:
                     ds = ds.set_coords(dim)
-                else:
-                    raise ValueError("%r is not present in all datasets" % dim)
         concat_over.update(k for k, v in ds.variables.items() if dim in v.dims)
         concat_dim_lengths.append(ds.dims.get(dim, 1))
 
@@ -193,26 +191,43 @@ def _calc_concat_over(datasets, dim, dim_names, data_vars, coords, compat):
                 # all nonindexes that are not the same in each dataset
                 for k in getattr(datasets[0], subset):
                     if k not in concat_over:
-                        # Compare the variable of all datasets vs. the one
-                        # of the first dataset. Perform the minimum amount of
-                        # loads in order to avoid multiple loads from disk
-                        # while keeping the RAM footprint low.
-                        v_lhs = datasets[0].variables[k].load()
-                        # We'll need to know later on if variables are equal.
-                        computed = []
-                        for ds_rhs in datasets[1:]:
-                            v_rhs = ds_rhs.variables[k].compute()
-                            computed.append(v_rhs)
-                            if not getattr(v_lhs, compat)(v_rhs):
-                                concat_over.add(k)
-                                equals[k] = False
-                                # computed variables are not to be re-computed
-                                # again in the future
-                                for ds, v in zip(datasets[1:], computed):
-                                    ds.variables[k].data = v.data
+                        equals[k] = None
+                        variables = [ds.variables[k] for ds in datasets]
+                        # first check without comparing values i.e. no computes
+                        for var in variables[1:]:
+                            equals[k] = getattr(variables[0], compat)(
+                                var, equiv=lazy_array_equiv
+                            )
+                            if equals[k] is not True:
+                                # exit early if we know these are not equal or that
+                                # equality cannot be determined i.e. one or all of
+                                # the variables wraps a numpy array
                                 break
-                        else:
-                            equals[k] = True
+
+                        if equals[k] is False:
+                            concat_over.add(k)
+
+                        elif equals[k] is None:
+                            # Compare the variable of all datasets vs. the one
+                            # of the first dataset. Perform the minimum amount of
+                            # loads in order to avoid multiple loads from disk
+                            # while keeping the RAM footprint low.
+                            v_lhs = datasets[0].variables[k].load()
+                            # We'll need to know later on if variables are equal.
+                            computed = []
+                            for ds_rhs in datasets[1:]:
+                                v_rhs = ds_rhs.variables[k].compute()
+                                computed.append(v_rhs)
+                                if not getattr(v_lhs, compat)(v_rhs):
+                                    concat_over.add(k)
+                                    equals[k] = False
+                                    # computed variables are not to be re-computed
+                                    # again in the future
+                                    for ds, v in zip(datasets[1:], computed):
+                                        ds.variables[k].data = v.data
+                                    break
+                            else:
+                                equals[k] = True
 
             elif opt == "all":
                 concat_over.update(
@@ -221,7 +236,7 @@ def _calc_concat_over(datasets, dim, dim_names, data_vars, coords, compat):
             elif opt == "minimal":
                 pass
             else:
-                raise ValueError("unexpected value for %s: %s" % (subset, opt))
+                raise ValueError(f"unexpected value for {subset}: {opt}")
         else:
             invalid_vars = [k for k in opt if k not in getattr(datasets[0], subset)]
             if invalid_vars:
@@ -248,7 +263,7 @@ def _parse_datasets(datasets):
     dims = set()
     all_coord_names = set()
     data_vars = set()  # list of data_vars
-    dim_coords = dict()  # maps dim name to variable
+    dim_coords = {}  # maps dim name to variable
     dims_sizes = {}  # shared dimension sizes to expand variables
 
     for ds in datasets:
@@ -316,22 +331,16 @@ def _dataset_concat(
         to_merge = {var: [] for var in variables_to_merge}
 
         for ds in datasets:
-            absent_merge_vars = variables_to_merge - set(ds.variables)
-            if absent_merge_vars:
-                raise ValueError(
-                    "variables %r are present in some datasets but not others. "
-                    % absent_merge_vars
-                )
-
             for var in variables_to_merge:
-                to_merge[var].append(ds.variables[var])
+                if var in ds:
+                    to_merge[var].append(ds.variables[var])
 
         for var in variables_to_merge:
             result_vars[var] = unique_variable(
                 var, to_merge[var], compat=compat, equals=equals.get(var, None)
             )
     else:
-        result_vars = OrderedDict()
+        result_vars = {}
     result_vars.update(dim_coords)
 
     # assign attrs and encoding from first dataset
@@ -362,16 +371,25 @@ def _dataset_concat(
     # n.b. this loop preserves variable order, needed for groupby.
     for k in datasets[0].variables:
         if k in concat_over:
-            vars = ensure_common_dims([ds.variables[k] for ds in datasets])
+            try:
+                vars = ensure_common_dims([ds.variables[k] for ds in datasets])
+            except KeyError:
+                raise ValueError("%r is not present in all datasets." % k)
             combined = concat_vars(vars, dim, positions)
             assert isinstance(combined, Variable)
             result_vars[k] = combined
 
     result = Dataset(result_vars, attrs=result_attrs)
+    absent_coord_names = coord_names - set(result.variables)
+    if absent_coord_names:
+        raise ValueError(
+            "Variables %r are coordinates in some datasets but not others."
+            % absent_coord_names
+        )
     result = result.set_coords(coord_names)
     result.encoding = result_encoding
 
-    result = result.drop(unlabeled_dims, errors="ignore")
+    result = result.drop_vars(unlabeled_dims, errors="ignore")
 
     if coord is not None:
         # add concat dimension last to ensure that its in the final Dataset

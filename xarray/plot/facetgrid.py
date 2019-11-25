@@ -296,7 +296,7 @@ class FacetGrid:
                     hue=hue,
                     add_legend=False,
                     _labels=False,
-                    **kwargs
+                    **kwargs,
                 )
                 self._mappables.append(mappable)
 
@@ -378,7 +378,7 @@ class FacetGrid:
             labels=list(self._hue_var.values),
             title=self._hue_label,
             loc="center right",
-            **kwargs
+            **kwargs,
         )
 
         self.figlegend = figlegend
@@ -493,7 +493,7 @@ class FacetGrid:
                     rotation=270,
                     ha="left",
                     va="center",
-                    **kwargs
+                    **kwargs,
                 )
 
             # The column titles on the top row
@@ -593,7 +593,7 @@ def _easy_facetgrid(
     gridspec_kw=None,
     ax=None,
     figsize=None,
-    **kwargs
+    **kwargs,
 ):
     """
     Convenience method to call xarray.plot.FacetGrid from 2d plotting methods
