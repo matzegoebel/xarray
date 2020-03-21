@@ -33,10 +33,11 @@ from xarray.backends.common import robust_getitem
 from xarray.backends.netCDF4_ import _extract_nc4_variable_encoding
 from xarray.backends.pydap_ import PydapDataStore
 from xarray.coding.variables import SerializationWarning
+from xarray.conventions import encode_dataset_coordinates
 from xarray.core import indexing
 from xarray.core.options import set_options
 from xarray.core.pycompat import dask_array_type
-from xarray.tests import mock
+from xarray.tests import LooseVersion, mock
 
 from . import (
     arm_xfail,
@@ -75,9 +76,14 @@ except ImportError:
     pass
 
 try:
+    import dask
     import dask.array as da
+
+    dask_version = dask.__version__
 except ImportError:
-    pass
+    # needed for xfailed tests when dask < 2.4.0
+    # remove when min dask > 2.4.0
+    dask_version = "10.0"
 
 ON_WINDOWS = sys.platform == "win32"
 
@@ -522,15 +528,35 @@ class DatasetIOBase:
         with self.roundtrip(original) as actual:
             assert_identical(original, actual)
 
+        original["foo"].encoding["coordinates"] = "y"
+        with self.roundtrip(original, open_kwargs={"decode_coords": False}) as expected:
+            # check roundtripping when decode_coords=False
+            with self.roundtrip(
+                expected, open_kwargs={"decode_coords": False}
+            ) as actual:
+                assert_identical(expected, actual)
+
     def test_roundtrip_global_coordinates(self):
-        original = Dataset({"x": [2, 3], "y": ("a", [42]), "z": ("x", [4, 5])})
+        original = Dataset(
+            {"foo": ("x", [0, 1])}, {"x": [2, 3], "y": ("a", [42]), "z": ("x", [4, 5])}
+        )
         with self.roundtrip(original) as actual:
             assert_identical(original, actual)
+
+        # test that global "coordinates" is as expected
+        _, attrs = encode_dataset_coordinates(original)
+        assert attrs["coordinates"] == "y"
+
+        # test warning when global "coordinates" is already set
+        original.attrs["coordinates"] = "foo"
+        with pytest.warns(SerializationWarning):
+            _, attrs = encode_dataset_coordinates(original)
+            assert attrs["coordinates"] == "foo"
 
     def test_roundtrip_coordinates_with_space(self):
         original = Dataset(coords={"x": 0, "y z": 1})
         expected = Dataset({"y z": 1}, {"x": 0})
-        with pytest.warns(xr.SerializationWarning):
+        with pytest.warns(SerializationWarning):
             with self.roundtrip(original) as actual:
                 assert_identical(expected, actual)
 
@@ -809,6 +835,18 @@ class CFEncodedBase(DatasetIOBase):
                 assert equals_latlon(ds.attrs["coordinates"])
                 assert "coordinates" not in ds["lat"].attrs
                 assert "coordinates" not in ds["lon"].attrs
+
+        original["temp"].encoding["coordinates"] = "lat"
+        with self.roundtrip(original) as actual:
+            assert_identical(actual, original)
+        original["precip"].encoding["coordinates"] = "lat"
+        with create_tmp_file() as tmp_file:
+            original.to_netcdf(tmp_file)
+            with open_dataset(tmp_file, decode_coords=True) as ds:
+                assert "lon" not in ds["temp"].encoding["coordinates"]
+                assert "lon" not in ds["precip"].encoding["coordinates"]
+                assert "coordinates" not in ds["lat"].encoding
+                assert "coordinates" not in ds["lon"].encoding
 
     def test_roundtrip_endian(self):
         ds = Dataset(
@@ -1690,39 +1728,53 @@ class ZarrBase(CFEncodedBase):
                 with xr.decode_cf(store):
                     pass
 
-    def test_write_persistence_modes(self):
+    @pytest.mark.skipif(LooseVersion(dask_version) < "2.4", reason="dask GH5334")
+    @pytest.mark.parametrize("group", [None, "group1"])
+    def test_write_persistence_modes(self, group):
         original = create_test_data()
 
         # overwrite mode
-        with self.roundtrip(original, save_kwargs={"mode": "w"}) as actual:
+        with self.roundtrip(
+            original,
+            save_kwargs={"mode": "w", "group": group},
+            open_kwargs={"group": group},
+        ) as actual:
             assert_identical(original, actual)
 
         # don't overwrite mode
-        with self.roundtrip(original, save_kwargs={"mode": "w-"}) as actual:
+        with self.roundtrip(
+            original,
+            save_kwargs={"mode": "w-", "group": group},
+            open_kwargs={"group": group},
+        ) as actual:
             assert_identical(original, actual)
 
         # make sure overwriting works as expected
         with self.create_zarr_target() as store:
             self.save(original, store)
             # should overwrite with no error
-            self.save(original, store, mode="w")
-            with self.open(store) as actual:
+            self.save(original, store, mode="w", group=group)
+            with self.open(store, group=group) as actual:
                 assert_identical(original, actual)
                 with pytest.raises(ValueError):
                     self.save(original, store, mode="w-")
 
         # check append mode for normal write
-        with self.roundtrip(original, save_kwargs={"mode": "a"}) as actual:
+        with self.roundtrip(
+            original,
+            save_kwargs={"mode": "a", "group": group},
+            open_kwargs={"group": group},
+        ) as actual:
             assert_identical(original, actual)
 
-        ds, ds_to_append, _ = create_append_test_data()
-
         # check append mode for append write
+        ds, ds_to_append, _ = create_append_test_data()
         with self.create_zarr_target() as store_target:
-            ds.to_zarr(store_target, mode="w")
-            ds_to_append.to_zarr(store_target, append_dim="time")
+            ds.to_zarr(store_target, mode="w", group=group)
+            ds_to_append.to_zarr(store_target, append_dim="time", group=group)
             original = xr.concat([ds, ds_to_append], dim="time")
-            assert_identical(original, xr.open_zarr(store_target))
+            actual = xr.open_zarr(store_target, group=group)
+            assert_identical(original, actual)
 
     def test_compressor_encoding(self):
         original = create_test_data()
@@ -1754,6 +1806,7 @@ class ZarrBase(CFEncodedBase):
     def test_dataset_caching(self):
         super().test_dataset_caching()
 
+    @pytest.mark.skipif(LooseVersion(dask_version) < "2.4", reason="dask GH5334")
     def test_append_write(self):
         ds, ds_to_append, _ = create_append_test_data()
         with self.create_zarr_target() as store_target:
@@ -1830,6 +1883,7 @@ class ZarrBase(CFEncodedBase):
                 xr.concat([ds, ds_to_append], dim="time"),
             )
 
+    @pytest.mark.skipif(LooseVersion(dask_version) < "2.4", reason="dask GH5334")
     def test_append_with_new_variable(self):
 
         ds, ds_to_append, ds_with_new_var = create_append_test_data()
@@ -1867,32 +1921,35 @@ class ZarrBase(CFEncodedBase):
         ds, ds_to_append, _ = create_append_test_data()
         ds, ds_to_append = ds.chunk(), ds_to_append.chunk()
 
-        with self.create_zarr_target() as store:
-            delayed_obj = self.save(ds, store, compute=False, mode="w")
-            assert isinstance(delayed_obj, Delayed)
+        with pytest.warns(SerializationWarning):
+            with self.create_zarr_target() as store:
+                delayed_obj = self.save(ds, store, compute=False, mode="w")
+                assert isinstance(delayed_obj, Delayed)
 
-            with pytest.raises(AssertionError):
+                with pytest.raises(AssertionError):
+                    with self.open(store) as actual:
+                        assert_identical(ds, actual)
+
+                delayed_obj.compute()
+
                 with self.open(store) as actual:
                     assert_identical(ds, actual)
 
-            delayed_obj.compute()
+                delayed_obj = self.save(
+                    ds_to_append, store, compute=False, append_dim="time"
+                )
+                assert isinstance(delayed_obj, Delayed)
 
-            with self.open(store) as actual:
-                assert_identical(ds, actual)
+                with pytest.raises(AssertionError):
+                    with self.open(store) as actual:
+                        assert_identical(
+                            xr.concat([ds, ds_to_append], dim="time"), actual
+                        )
 
-            delayed_obj = self.save(
-                ds_to_append, store, compute=False, append_dim="time"
-            )
-            assert isinstance(delayed_obj, Delayed)
+                delayed_obj.compute()
 
-            with pytest.raises(AssertionError):
                 with self.open(store) as actual:
                     assert_identical(xr.concat([ds, ds_to_append], dim="time"), actual)
-
-            delayed_obj.compute()
-
-            with self.open(store) as actual:
-                assert_identical(xr.concat([ds, ds_to_append], dim="time"), actual)
 
     def test_encoding_chunksizes(self):
         # regression test for GH2278
@@ -1925,24 +1982,8 @@ class TestZarrDirectoryStore(ZarrBase):
             yield tmp
 
 
-class ScipyWriteBase(CFEncodedBase, NetCDF3Only):
-    def test_append_write(self):
-        import scipy
-
-        if scipy.__version__ == "1.0.1":
-            pytest.xfail("https://github.com/scipy/scipy/issues/8625")
-        super().test_append_write()
-
-    def test_append_overwrite_values(self):
-        import scipy
-
-        if scipy.__version__ == "1.0.1":
-            pytest.xfail("https://github.com/scipy/scipy/issues/8625")
-        super().test_append_overwrite_values()
-
-
 @requires_scipy
-class TestScipyInMemoryData(ScipyWriteBase):
+class TestScipyInMemoryData(CFEncodedBase, NetCDF3Only):
     engine = "scipy"
 
     @contextlib.contextmanager
@@ -1963,7 +2004,7 @@ class TestScipyInMemoryData(ScipyWriteBase):
 
 
 @requires_scipy
-class TestScipyFileObject(ScipyWriteBase):
+class TestScipyFileObject(CFEncodedBase, NetCDF3Only):
     engine = "scipy"
 
     @contextlib.contextmanager
@@ -1996,7 +2037,7 @@ class TestScipyFileObject(ScipyWriteBase):
 
 
 @requires_scipy
-class TestScipyFilePath(ScipyWriteBase):
+class TestScipyFilePath(CFEncodedBase, NetCDF3Only):
     engine = "scipy"
 
     @contextlib.contextmanager
@@ -2149,7 +2190,7 @@ class TestH5NetCDFData(NetCDF4Base):
     @contextlib.contextmanager
     def create_store(self):
         with create_tmp_file() as tmp_file:
-            yield backends.H5NetCDFStore(tmp_file, "w")
+            yield backends.H5NetCDFStore.open(tmp_file, "w")
 
     @pytest.mark.filterwarnings("ignore:complex dtypes are supported by h5py")
     @pytest.mark.parametrize(
@@ -2311,6 +2352,27 @@ class TestH5NetCDFData(NetCDF4Base):
         with self.roundtrip(ds, save_kwargs=kwargs) as actual:
             assert actual.x.encoding["compression"] == "lzf"
             assert actual.x.encoding["compression_opts"] is None
+
+    def test_already_open_dataset_group(self):
+        import h5netcdf
+
+        with create_tmp_file() as tmp_file:
+            with nc4.Dataset(tmp_file, mode="w") as nc:
+                group = nc.createGroup("g")
+                v = group.createVariable("x", "int")
+                v[...] = 42
+
+            h5 = h5netcdf.File(tmp_file, mode="r")
+            store = backends.H5NetCDFStore(h5["g"])
+            with open_dataset(store) as ds:
+                expected = Dataset({"x": ((), 42)})
+                assert_identical(expected, ds)
+
+            h5 = h5netcdf.File(tmp_file, mode="r")
+            store = backends.H5NetCDFStore(h5, group="g")
+            with open_dataset(store) as ds:
+                expected = Dataset({"x": ((), 42)})
+                assert_identical(expected, ds)
 
 
 @requires_h5netcdf
@@ -2478,6 +2540,7 @@ def test_open_mfdataset_manyfiles(
 
 
 @requires_netCDF4
+@requires_dask
 def test_open_mfdataset_list_attr():
     """
     Case when an attribute of type list differs across the multiple files
@@ -2798,6 +2861,42 @@ class TestDask(DatasetIOBase):
                     # attributes from ds2 are not retained, e.g.,
                     with raises_regex(AttributeError, "no attribute"):
                         actual.test2
+
+    def test_open_mfdataset_attrs_file(self):
+        original = Dataset({"foo": ("x", np.random.randn(10))})
+        with create_tmp_files(2) as (tmp1, tmp2):
+            ds1 = original.isel(x=slice(5))
+            ds2 = original.isel(x=slice(5, 10))
+            ds1.attrs["test1"] = "foo"
+            ds2.attrs["test2"] = "bar"
+            ds1.to_netcdf(tmp1)
+            ds2.to_netcdf(tmp2)
+            with open_mfdataset(
+                [tmp1, tmp2], concat_dim="x", combine="nested", attrs_file=tmp2
+            ) as actual:
+                # attributes are inherited from the master file
+                assert actual.attrs["test2"] == ds2.attrs["test2"]
+                # attributes from ds1 are not retained, e.g.,
+                assert "test1" not in actual.attrs
+
+    def test_open_mfdataset_attrs_file_path(self):
+        original = Dataset({"foo": ("x", np.random.randn(10))})
+        with create_tmp_files(2) as (tmp1, tmp2):
+            tmp1 = Path(tmp1)
+            tmp2 = Path(tmp2)
+            ds1 = original.isel(x=slice(5))
+            ds2 = original.isel(x=slice(5, 10))
+            ds1.attrs["test1"] = "foo"
+            ds2.attrs["test2"] = "bar"
+            ds1.to_netcdf(tmp1)
+            ds2.to_netcdf(tmp2)
+            with open_mfdataset(
+                [tmp1, tmp2], concat_dim="x", combine="nested", attrs_file=tmp2
+            ) as actual:
+                # attributes are inherited from the master file
+                assert actual.attrs["test2"] == ds2.attrs["test2"]
+                # attributes from ds1 are not retained, e.g.,
+                assert "test1" not in actual.attrs
 
     def test_open_mfdataset_auto_combine(self):
         original = Dataset({"foo": ("x", np.random.randn(10)), "x": np.arange(10)})
@@ -3205,7 +3304,7 @@ class TestPydapOnline(TestPydap):
 
 @requires_scipy
 @requires_pynio
-class TestPyNio(ScipyWriteBase):
+class TestPyNio(CFEncodedBase, NetCDF3Only):
     def test_write_store(self):
         # pynio is read-only for now
         pass
@@ -3423,6 +3522,7 @@ class TestPseudoNetCDFFormat:
             ["example.uamiv", "example.uamiv"],
             engine="pseudonetcdf",
             concat_dim="TSTEP",
+            combine="nested",
             backend_kwargs={"format": "uamiv"},
         )
 
@@ -3951,6 +4051,7 @@ class TestRasterio:
                     with xr.open_rasterio(tmp_file) as actual:
                         assert_allclose(actual, expected)
 
+    @pytest.mark.xfail(reason="rasterio 1.1.1 is broken. GH3573")
     def test_rasterio_vrt(self):
         import rasterio
 

@@ -15,6 +15,7 @@ from xarray.convert import from_cdms2
 from xarray.core import dtypes
 from xarray.core.common import full_like
 from xarray.core.indexes import propagate_indexes
+from xarray.core.utils import is_scalar
 from xarray.tests import (
     LooseVersion,
     ReturnItem,
@@ -79,7 +80,7 @@ class TestDataArray:
         assert expected == repr(self.mda)
 
     @pytest.mark.skipif(
-        LooseVersion(np.__version__) < "1.15",
+        LooseVersion(np.__version__) < "1.16",
         reason="old versions of numpy have different printing behavior",
     )
     def test_repr_multiindex_long(self):
@@ -751,12 +752,19 @@ class TestDataArray:
 
         blocked = unblocked.chunk()
         assert blocked.chunks == ((3,), (4,))
+        first_dask_name = blocked.data.name
 
         blocked = unblocked.chunk(chunks=((2, 1), (2, 2)))
         assert blocked.chunks == ((2, 1), (2, 2))
+        assert blocked.data.name != first_dask_name
 
         blocked = unblocked.chunk(chunks=(3, 3))
         assert blocked.chunks == ((3,), (3, 1))
+        assert blocked.data.name != first_dask_name
+
+        # name doesn't change when rechunking by same amount
+        # this fails if ReprObject doesn't have __dask_tokenize__ defined
+        assert unblocked.chunk(2).data.name == unblocked.chunk(2).data.name
 
         assert blocked.load().chunks is None
 
@@ -1528,6 +1536,30 @@ class TestDataArray:
         expected = DataArray(array.values, {"y": list("abc")}, dims="y")
         actual = array.swap_dims({"x": "y"})
         assert_identical(expected, actual)
+        for dim_name in set().union(expected.indexes.keys(), actual.indexes.keys()):
+            pd.testing.assert_index_equal(
+                expected.indexes[dim_name], actual.indexes[dim_name]
+            )
+
+        array = DataArray(np.random.randn(3), {"x": list("abc")}, "x")
+        expected = DataArray(array.values, {"x": ("y", list("abc"))}, dims="y")
+        actual = array.swap_dims({"x": "y"})
+        assert_identical(expected, actual)
+        for dim_name in set().union(expected.indexes.keys(), actual.indexes.keys()):
+            pd.testing.assert_index_equal(
+                expected.indexes[dim_name], actual.indexes[dim_name]
+            )
+
+        # multiindex case
+        idx = pd.MultiIndex.from_arrays([list("aab"), list("yzz")], names=["y1", "y2"])
+        array = DataArray(np.random.randn(3), {"y": ("x", idx)}, "x")
+        expected = DataArray(array.values, {"y": idx}, "y")
+        actual = array.swap_dims({"x": "y"})
+        assert_identical(expected, actual)
+        for dim_name in set().union(expected.indexes.keys(), actual.indexes.keys()):
+            pd.testing.assert_index_equal(
+                expected.indexes[dim_name], actual.indexes[dim_name]
+            )
 
     def test_expand_dims_error(self):
         array = DataArray(
@@ -2003,9 +2035,12 @@ class TestDataArray:
                 codes=[[], []],
                 names=["x", "y"],
             )
-        pd.util.testing.assert_index_equal(a, b)
+        pd.testing.assert_index_equal(a, b)
 
         actual = orig.stack(z=["x", "y"]).unstack("z").drop_vars(["x", "y"])
+        assert_identical(orig, actual)
+
+        actual = orig.stack(z=[...]).unstack("z").drop_vars(["x", "y"])
         assert_identical(orig, actual)
 
         dims = ["a", "b", "c", "d", "e"]
@@ -2183,6 +2218,12 @@ class TestDataArray:
         actual = arr.where(arr.x < 2, drop=True)
         assert_identical(actual, expected)
 
+    def test_where_lambda(self):
+        arr = DataArray(np.arange(4), dims="y")
+        expected = arr.sel(y=slice(2))
+        actual = arr.where(lambda x: x.y < 2, drop=True)
+        assert_identical(actual, expected)
+
     def test_where_string(self):
         array = DataArray(["a", "b"])
         expected = DataArray(np.array(["a", np.nan], dtype=object))
@@ -2330,17 +2371,22 @@ class TestDataArray:
         with pytest.raises(TypeError):
             orig.mean(out=np.ones(orig.shape))
 
-    def test_quantile(self):
-        for q in [0.25, [0.50], [0.25, 0.75]]:
-            for axis, dim in zip(
-                [None, 0, [0], [0, 1]], [None, "x", ["x"], ["x", "y"]]
-            ):
-                actual = DataArray(self.va).quantile(q, dim=dim, keep_attrs=True)
-                expected = np.nanpercentile(
-                    self.dv.values, np.array(q) * 100, axis=axis
-                )
-                np.testing.assert_allclose(actual.values, expected)
-                assert actual.attrs == self.attrs
+    @pytest.mark.parametrize("skipna", [True, False])
+    @pytest.mark.parametrize("q", [0.25, [0.50], [0.25, 0.75]])
+    @pytest.mark.parametrize(
+        "axis, dim", zip([None, 0, [0], [0, 1]], [None, "x", ["x"], ["x", "y"]])
+    )
+    def test_quantile(self, q, axis, dim, skipna):
+        actual = DataArray(self.va).quantile(q, dim=dim, keep_attrs=True, skipna=skipna)
+        _percentile_func = np.nanpercentile if skipna else np.percentile
+        expected = _percentile_func(self.dv.values, np.array(q) * 100, axis=axis)
+        np.testing.assert_allclose(actual.values, expected)
+        if is_scalar(q):
+            assert "quantile" not in actual.dims
+        else:
+            assert "quantile" in actual.dims
+
+        assert actual.attrs == self.attrs
 
     def test_reduce_keep_attrs(self):
         # Test dropped attrs
@@ -3368,14 +3414,10 @@ class TestDataArray:
         assert_array_equal(actual.columns, [0, 1])
 
         # roundtrips
-        for shape in [(3,), (3, 4), (3, 4, 5)]:
-            if len(shape) > 2 and LooseVersion(pd.__version__) >= "0.25.0":
-                continue
+        for shape in [(3,), (3, 4)]:
             dims = list("abc")[: len(shape)]
             da = DataArray(np.random.randn(*shape), dims=dims)
-            with warnings.catch_warnings():
-                warnings.filterwarnings("ignore", r"\W*Panel is deprecated")
-                roundtripped = DataArray(da.to_pandas()).drop_vars(dims)
+            roundtripped = DataArray(da.to_pandas()).drop_vars(dims)
             assert_identical(da, roundtripped)
 
         with raises_regex(ValueError, "cannot convert"):
@@ -3449,7 +3491,7 @@ class TestDataArray:
 
     def test_to_and_from_empty_series(self):
         # GH697
-        expected = pd.Series([])
+        expected = pd.Series([], dtype=np.float64)
         da = DataArray.from_series(expected)
         assert len(da) == 0
         actual = da.to_series()
@@ -3957,6 +3999,43 @@ class TestDataArray:
         with pytest.raises(TypeError):
             da.dot(dm.values)
 
+    def test_dot_align_coords(self):
+        # GH 3694
+
+        x = np.linspace(-3, 3, 6)
+        y = np.linspace(-3, 3, 5)
+        z_a = range(4)
+        da_vals = np.arange(6 * 5 * 4).reshape((6, 5, 4))
+        da = DataArray(da_vals, coords=[x, y, z_a], dims=["x", "y", "z"])
+
+        z_m = range(2, 6)
+        dm_vals = range(4)
+        dm = DataArray(dm_vals, coords=[z_m], dims=["z"])
+
+        with xr.set_options(arithmetic_join="exact"):
+            with raises_regex(ValueError, "indexes along dimension"):
+                da.dot(dm)
+
+        da_aligned, dm_aligned = xr.align(da, dm, join="inner")
+
+        # nd dot 1d
+        actual = da.dot(dm)
+        expected_vals = np.tensordot(da_aligned.values, dm_aligned.values, [2, 0])
+        expected = DataArray(expected_vals, coords=[x, da_aligned.y], dims=["x", "y"])
+        assert_equal(expected, actual)
+
+        # multiple shared dims
+        dm_vals = np.arange(20 * 5 * 4).reshape((20, 5, 4))
+        j = np.linspace(-3, 3, 20)
+        dm = DataArray(dm_vals, coords=[j, y, z_m], dims=["j", "y", "z"])
+        da_aligned, dm_aligned = xr.align(da, dm, join="inner")
+        actual = da.dot(dm)
+        expected_vals = np.tensordot(
+            da_aligned.values, dm_aligned.values, axes=([1, 2], [1, 2])
+        )
+        expected = DataArray(expected_vals, coords=[x, j], dims=["x", "j"])
+        assert_equal(expected, actual)
+
     def test_matmul(self):
 
         # copied from above (could make a fixture)
@@ -3969,6 +4048,24 @@ class TestDataArray:
         result = da @ da
         expected = da.dot(da)
         assert_identical(result, expected)
+
+    def test_matmul_align_coords(self):
+        # GH 3694
+
+        x_a = np.arange(6)
+        x_b = np.arange(2, 8)
+        da_vals = np.arange(6)
+        da_a = DataArray(da_vals, coords=[x_a], dims=["x"])
+        da_b = DataArray(da_vals, coords=[x_b], dims=["x"])
+
+        # only test arithmetic_join="inner" (=default)
+        result = da_a @ da_b
+        expected = da_a.dot(da_b)
+        assert_identical(result, expected)
+
+        with xr.set_options(arithmetic_join="exact"):
+            with raises_regex(ValueError, "indexes along dimension"):
+                da_a @ da_b
 
     def test_binary_op_propagate_indexes(self):
         # regression test for GH2227
@@ -4080,6 +4177,113 @@ class TestDataArray:
         x = DataArray([3.0, 1.0, np.nan, 2.0, 4.0], dims=("z",))
         y = DataArray([0.75, 0.25, np.nan, 0.5, 1.0], dims=("z",))
         assert_equal(y.rank("z", pct=True), y)
+
+    def test_pad_constant(self):
+        ar = DataArray(np.arange(3 * 4 * 5).reshape(3, 4, 5))
+        actual = ar.pad(dim_0=(1, 3))
+        expected = DataArray(
+            np.pad(
+                np.arange(3 * 4 * 5).reshape(3, 4, 5).astype(np.float32),
+                mode="constant",
+                pad_width=((1, 3), (0, 0), (0, 0)),
+                constant_values=np.nan,
+            )
+        )
+        assert actual.shape == (7, 4, 5)
+        assert_identical(actual, expected)
+
+    def test_pad_coords(self):
+        ar = DataArray(
+            np.arange(3 * 4 * 5).reshape(3, 4, 5),
+            [("x", np.arange(3)), ("y", np.arange(4)), ("z", np.arange(5))],
+        )
+        actual = ar.pad(x=(1, 3), constant_values=1)
+        expected = DataArray(
+            np.pad(
+                np.arange(3 * 4 * 5).reshape(3, 4, 5),
+                mode="constant",
+                pad_width=((1, 3), (0, 0), (0, 0)),
+                constant_values=1,
+            ),
+            [
+                (
+                    "x",
+                    np.pad(
+                        np.arange(3).astype(np.float32),
+                        mode="constant",
+                        pad_width=(1, 3),
+                        constant_values=np.nan,
+                    ),
+                ),
+                ("y", np.arange(4)),
+                ("z", np.arange(5)),
+            ],
+        )
+        assert_identical(actual, expected)
+
+    @pytest.mark.parametrize("mode", ("minimum", "maximum", "mean", "median"))
+    @pytest.mark.parametrize(
+        "stat_length", (None, 3, (1, 3), {"dim_0": (2, 1), "dim_2": (4, 2)})
+    )
+    def test_pad_stat_length(self, mode, stat_length):
+        ar = DataArray(np.arange(3 * 4 * 5).reshape(3, 4, 5))
+        actual = ar.pad(dim_0=(1, 3), dim_2=(2, 2), mode=mode, stat_length=stat_length)
+        if isinstance(stat_length, dict):
+            stat_length = (stat_length["dim_0"], (4, 4), stat_length["dim_2"])
+        expected = DataArray(
+            np.pad(
+                np.arange(3 * 4 * 5).reshape(3, 4, 5),
+                pad_width=((1, 3), (0, 0), (2, 2)),
+                mode=mode,
+                stat_length=stat_length,
+            )
+        )
+        assert actual.shape == (7, 4, 9)
+        assert_identical(actual, expected)
+
+    @pytest.mark.parametrize(
+        "end_values", (None, 3, (3, 5), {"dim_0": (2, 1), "dim_2": (4, 2)})
+    )
+    def test_pad_linear_ramp(self, end_values):
+        ar = DataArray(np.arange(3 * 4 * 5).reshape(3, 4, 5))
+        actual = ar.pad(
+            dim_0=(1, 3), dim_2=(2, 2), mode="linear_ramp", end_values=end_values
+        )
+        if end_values is None:
+            end_values = 0
+        elif isinstance(end_values, dict):
+            end_values = (end_values["dim_0"], (4, 4), end_values["dim_2"])
+        expected = DataArray(
+            np.pad(
+                np.arange(3 * 4 * 5).reshape(3, 4, 5),
+                pad_width=((1, 3), (0, 0), (2, 2)),
+                mode="linear_ramp",
+                end_values=end_values,
+            )
+        )
+        assert actual.shape == (7, 4, 9)
+        assert_identical(actual, expected)
+
+    @pytest.mark.parametrize("mode", ("reflect", "symmetric"))
+    @pytest.mark.parametrize("reflect_type", (None, "even", "odd"))
+    def test_pad_reflect(self, mode, reflect_type):
+
+        ar = DataArray(np.arange(3 * 4 * 5).reshape(3, 4, 5))
+        actual = ar.pad(
+            dim_0=(1, 3), dim_2=(2, 2), mode=mode, reflect_type=reflect_type
+        )
+        np_kwargs = {
+            "array": np.arange(3 * 4 * 5).reshape(3, 4, 5),
+            "pad_width": ((1, 3), (0, 0), (2, 2)),
+            "mode": mode,
+        }
+        # numpy does not support reflect_type=None
+        if reflect_type is not None:
+            np_kwargs["reflect_type"] = reflect_type
+        expected = DataArray(np.pad(**np_kwargs))
+
+        assert actual.shape == (7, 4, 9)
+        assert_identical(actual, expected)
 
 
 @pytest.fixture(params=[1])

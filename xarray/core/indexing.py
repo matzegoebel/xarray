@@ -4,7 +4,7 @@ import operator
 from collections import defaultdict
 from contextlib import suppress
 from datetime import timedelta
-from typing import Any, Callable, Sequence, Tuple, Union
+from typing import Any, Callable, Iterable, Sequence, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -175,6 +175,16 @@ def convert_label_indexer(index, label, index_name="", method=None, tolerance=No
         if label.ndim == 0:
             if isinstance(index, pd.MultiIndex):
                 indexer, new_index = index.get_loc_level(label.item(), level=0)
+            elif isinstance(index, pd.CategoricalIndex):
+                if method is not None:
+                    raise ValueError(
+                        "'method' is not a valid kwarg when indexing using a CategoricalIndex."
+                    )
+                if tolerance is not None:
+                    raise ValueError(
+                        "'tolerance' is not a valid kwarg when indexing using a CategoricalIndex."
+                    )
+                indexer = index.get_loc(label.item())
             else:
                 indexer = index.get_loc(
                     label.item(), method=method, tolerance=tolerance
@@ -1213,6 +1223,19 @@ def posify_mask_indexer(indexer):
     return type(indexer)(key)
 
 
+def is_fancy_indexer(indexer: Any) -> bool:
+    """Return False if indexer is a int, slice, a 1-dimensional list, or a 0 or
+    1-dimensional ndarray; in all other cases return True
+    """
+    if isinstance(indexer, (int, slice)):
+        return False
+    if isinstance(indexer, np.ndarray):
+        return indexer.ndim > 1
+    if isinstance(indexer, list):
+        return bool(indexer) and not isinstance(indexer[0], int)
+    return True
+
+
 class NumpyIndexingAdapter(ExplicitlyIndexedNDArrayMixin):
     """Wrap a NumPy array to use explicit indexing."""
 
@@ -1291,6 +1314,24 @@ class DaskIndexingAdapter(ExplicitlyIndexedNDArrayMixin):
         self.array = array
 
     def __getitem__(self, key):
+
+        if not isinstance(key, VectorizedIndexer):
+            # if possible, short-circuit when keys are effectively slice(None)
+            # This preserves dask name and passes lazy array equivalence checks
+            # (see duck_array_ops.lazy_array_equiv)
+            rewritten_indexer = False
+            new_indexer = []
+            for idim, k in enumerate(key.tuple):
+                if isinstance(k, Iterable) and duck_array_ops.array_equiv(
+                    k, np.arange(self.array.shape[idim])
+                ):
+                    new_indexer.append(slice(None))
+                    rewritten_indexer = True
+                else:
+                    new_indexer.append(k)
+            if rewritten_indexer:
+                key = type(key)(tuple(new_indexer))
+
         if isinstance(key, BasicIndexer):
             return self.array[key.tuple]
         elif isinstance(key, VectorizedIndexer):

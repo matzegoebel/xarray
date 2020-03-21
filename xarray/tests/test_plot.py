@@ -1,4 +1,5 @@
 import inspect
+from copy import deepcopy
 from datetime import datetime
 
 import numpy as np
@@ -14,7 +15,6 @@ from xarray.plot.utils import (
     _build_discrete_cmap,
     _color_palette,
     _determine_cmap_params,
-    import_seaborn,
     label_from_attrs,
 )
 
@@ -60,6 +60,15 @@ def substring_in_axes(substring, ax):
         if substring in txt:
             return True
     return False
+
+
+def substring_not_in_axes(substring, ax):
+    """
+    Return True if a substring is not found anywhere in an axes
+    """
+    alltxt = {t.get_text() for t in ax.findobj(mpl.text.Text)}
+    check = [(substring not in txt) for txt in alltxt]
+    return all(check)
 
 
 def easy_array(shape, start=0, stop=1):
@@ -265,6 +274,72 @@ class TestPlot(PlotTestCase):
         )
 
         a.plot.contourf(x="time", y="depth")
+        a.plot.contourf(x="depth", y="time")
+
+    def test_contourf_cmap_set(self):
+        a = DataArray(easy_array((4, 4)), dims=["z", "time"])
+
+        cmap = mpl.cm.viridis
+
+        # deepcopy to ensure cmap is not changed by contourf()
+        # Set vmin and vmax so that _build_discrete_colormap is called with
+        # extend='both'. extend is passed to
+        # mpl.colors.from_levels_and_colors(), which returns a result with
+        # sensible under and over values if extend='both', but not if
+        # extend='neither' (but if extend='neither' the under and over values
+        # would not be used because the data would all be within the plotted
+        # range)
+        pl = a.plot.contourf(cmap=deepcopy(cmap), vmin=0.1, vmax=0.9)
+
+        # check the set_bad color
+        assert np.all(
+            pl.cmap(np.ma.masked_invalid([np.nan]))[0]
+            == cmap(np.ma.masked_invalid([np.nan]))[0]
+        )
+
+        # check the set_under color
+        assert pl.cmap(-np.inf) == cmap(-np.inf)
+
+        # check the set_over color
+        assert pl.cmap(np.inf) == cmap(np.inf)
+
+    def test_contourf_cmap_set_with_bad_under_over(self):
+        a = DataArray(easy_array((4, 4)), dims=["z", "time"])
+
+        # Make a copy here because we want a local cmap that we will modify.
+        # Use deepcopy because matplotlib Colormap objects have tuple members
+        # and we want to ensure we do not change the original.
+        cmap = deepcopy(mpl.cm.viridis)
+
+        cmap.set_bad("w")
+        # check we actually changed the set_bad color
+        assert np.all(
+            cmap(np.ma.masked_invalid([np.nan]))[0]
+            != mpl.cm.viridis(np.ma.masked_invalid([np.nan]))[0]
+        )
+
+        cmap.set_under("r")
+        # check we actually changed the set_under color
+        assert cmap(-np.inf) != mpl.cm.viridis(-np.inf)
+
+        cmap.set_over("g")
+        # check we actually changed the set_over color
+        assert cmap(np.inf) != mpl.cm.viridis(-np.inf)
+
+        # deepcopy to ensure cmap is not changed by contourf()
+        pl = a.plot.contourf(cmap=deepcopy(cmap))
+
+        # check the set_bad color has been kept
+        assert np.all(
+            pl.cmap(np.ma.masked_invalid([np.nan]))[0]
+            == cmap(np.ma.masked_invalid([np.nan]))[0]
+        )
+
+        # check the set_under color has been kept
+        assert pl.cmap(-np.inf) == cmap(-np.inf)
+
+        # check the set_over color has been kept
+        assert pl.cmap(np.inf) == cmap(np.inf)
 
     def test3d(self):
         self.darray.plot()
@@ -416,8 +491,24 @@ class TestPlot(PlotTestCase):
             d.plot(x="x", y="y", col="columns", ax=plt.gca())
 
     def test_coord_with_interval(self):
+        """Test line plot with intervals."""
         bins = [-1, 0, 1, 2]
         self.darray.groupby_bins("dim_0", bins).mean(...).plot()
+
+    def test_coord_with_interval_x(self):
+        """Test line plot with intervals explicitly on x axis."""
+        bins = [-1, 0, 1, 2]
+        self.darray.groupby_bins("dim_0", bins).mean(...).plot(x="dim_0_bins")
+
+    def test_coord_with_interval_y(self):
+        """Test line plot with intervals explicitly on y axis."""
+        bins = [-1, 0, 1, 2]
+        self.darray.groupby_bins("dim_0", bins).mean(...).plot(y="dim_0_bins")
+
+    def test_coord_with_interval_xy(self):
+        """Test line plot with intervals on both x and y axes."""
+        bins = [-1, 0, 1, 2]
+        self.darray.groupby_bins("dim_0", bins).mean(...).dim_0_bins.plot()
 
 
 class TestPlot1D(PlotTestCase):
@@ -501,8 +592,21 @@ class TestPlotStep(PlotTestCase):
         self.darray[0, 0].plot.step()
 
     def test_coord_with_interval_step(self):
+        """Test step plot with intervals."""
         bins = [-1, 0, 1, 2]
         self.darray.groupby_bins("dim_0", bins).mean(...).plot.step()
+        assert len(plt.gca().lines[0].get_xdata()) == ((len(bins) - 1) * 2)
+
+    def test_coord_with_interval_step_x(self):
+        """Test step plot with intervals explicitly on x axis."""
+        bins = [-1, 0, 1, 2]
+        self.darray.groupby_bins("dim_0", bins).mean(...).plot.step(x="dim_0_bins")
+        assert len(plt.gca().lines[0].get_xdata()) == ((len(bins) - 1) * 2)
+
+    def test_coord_with_interval_step_y(self):
+        """Test step plot with intervals explicitly on y axis."""
+        bins = [-1, 0, 1, 2]
+        self.darray.groupby_bins("dim_0", bins).mean(...).plot.step(y="dim_0_bins")
         assert len(plt.gca().lines[0].get_xdata()) == ((len(bins) - 1) * 2)
 
 
@@ -1645,6 +1749,7 @@ class TestFacetGrid(PlotTestCase):
             assert np.allclose(expected, clim)
 
     @pytest.mark.slow
+    @pytest.mark.filterwarnings("ignore")
     def test_can_set_norm(self):
         norm = mpl.colors.SymLogNorm(0.1)
         self.g.map_dataarray(xplt.imshow, "x", "y", norm=norm)
@@ -1774,6 +1879,18 @@ class TestFacetGrid4d(PlotTestCase):
         # Top row should be labeled
         for label, ax in zip(self.darray.coords["col"].values, g.axes[0, :]):
             assert substring_in_axes(label, ax)
+
+        # ensure that row & col labels can be changed
+        g.set_titles("abc={value}")
+        for label, ax in zip(self.darray.coords["row"].values, g.axes[:, -1]):
+            assert substring_in_axes(f"abc={label}", ax)
+            # previous labels were "row=row0" etc.
+            assert substring_not_in_axes("row=", ax)
+
+        for label, ax in zip(self.darray.coords["col"].values, g.axes[0, :]):
+            assert substring_in_axes(f"abc={label}", ax)
+            # previous labels were "col=row0" etc.
+            assert substring_not_in_axes("col=", ax)
 
 
 @pytest.mark.filterwarnings("ignore:tight_layout cannot")
@@ -2067,22 +2184,6 @@ class TestNcAxisNotInstalled(PlotTestCase):
             self.darray.plot.line()
 
 
-@requires_seaborn
-def test_import_seaborn_no_warning():
-    # GH1633
-    with pytest.warns(None) as record:
-        import_seaborn()
-    assert len(record) == 0
-
-
-@requires_matplotlib
-def test_plot_seaborn_no_import_warning():
-    # GH1633
-    with pytest.warns(None) as record:
-        _color_palette("Blues", 4)
-    assert len(record) == 0
-
-
 test_da_list = [
     DataArray(easy_array((10,))),
     DataArray(easy_array((10, 3))),
@@ -2149,3 +2250,31 @@ class TestAxesKwargs:
         da.plot(yticks=np.arange(5))
         expected = np.arange(5)
         assert np.all(plt.gca().get_yticks() == expected)
+
+
+@requires_matplotlib
+@pytest.mark.parametrize("plotfunc", ["pcolormesh", "contourf", "contour"])
+def test_plot_transposed_nondim_coord(plotfunc):
+    x = np.linspace(0, 10, 101)
+    h = np.linspace(3, 7, 101)
+    s = np.linspace(0, 1, 51)
+    z = s[:, np.newaxis] * h[np.newaxis, :]
+    da = xr.DataArray(
+        np.sin(x) * np.cos(z),
+        dims=["s", "x"],
+        coords={"x": x, "s": s, "z": (("s", "x"), z), "zt": (("x", "s"), z.T)},
+    )
+    getattr(da.plot, plotfunc)(x="x", y="zt")
+    getattr(da.plot, plotfunc)(x="zt", y="x")
+
+
+@requires_matplotlib
+@pytest.mark.parametrize("plotfunc", ["pcolormesh", "imshow"])
+def test_plot_transposes_properly(plotfunc):
+    # test that we aren't mistakenly transposing when the 2 dimensions have equal sizes.
+    da = xr.DataArray([np.sin(2 * np.pi / 10 * np.arange(10))] * 10, dims=("y", "x"))
+    hdl = getattr(da.plot, plotfunc)(x="x", y="y")
+    # get_array doesn't work for contour, contourf. It returns the colormap intervals.
+    # pcolormesh returns 1D array but imshow returns a 2D array so it is necessary
+    # to ravel() on the LHS
+    assert np.all(hdl.get_array().ravel() == da.to_masked_array().ravel())

@@ -40,8 +40,7 @@ def test_concat_compat():
     assert_equal(ds2.no_x_y, result.no_x_y.transpose())
 
     for var in ["has_x", "no_x_y"]:
-        assert "y" not in result[var]
-
+        assert "y" not in result[var].dims and "y" not in result[var].coords
     with raises_regex(ValueError, "coordinates in some datasets but not others"):
         concat([ds1, ds2], dim="q")
     with raises_regex(ValueError, "'q' is not present in all datasets"):
@@ -249,6 +248,13 @@ class TestConcatDataset:
         for join in expected:
             actual = concat([ds1, ds2], join=join, dim="x")
             assert_equal(actual, expected[join])
+
+        # regression test for #3681
+        actual = concat([ds1.drop("x"), ds2.drop("x")], join="override", dim="y")
+        expected = Dataset(
+            {"a": (("x", "y"), np.array([0, 0], ndmin=2))}, coords={"y": [0, 0.0001]}
+        )
+        assert_identical(actual, expected)
 
     def test_concat_promote_shape(self):
         # mixed dims within variables
@@ -462,3 +468,37 @@ class TestConcatDataArray:
         for join in expected:
             actual = concat([ds1, ds2], join=join, dim="x")
             assert_equal(actual, expected[join].to_array())
+
+
+@pytest.mark.parametrize("attr1", ({"a": {"meta": [10, 20, 30]}}, {"a": [1, 2, 3]}, {}))
+@pytest.mark.parametrize("attr2", ({"a": [1, 2, 3]}, {}))
+def test_concat_attrs_first_variable(attr1, attr2):
+
+    arrs = [
+        DataArray([[1], [2]], dims=["x", "y"], attrs=attr1),
+        DataArray([[3], [4]], dims=["x", "y"], attrs=attr2),
+    ]
+
+    concat_attrs = concat(arrs, "y").attrs
+    assert concat_attrs == attr1
+
+
+def test_concat_merge_single_non_dim_coord():
+    da1 = DataArray([1, 2, 3], dims="x", coords={"x": [1, 2, 3], "y": 1})
+    da2 = DataArray([4, 5, 6], dims="x", coords={"x": [4, 5, 6]})
+
+    expected = DataArray(range(1, 7), dims="x", coords={"x": range(1, 7), "y": 1})
+
+    for coords in ["different", "minimal"]:
+        actual = concat([da1, da2], "x", coords=coords)
+        assert_identical(actual, expected)
+
+    with raises_regex(ValueError, "'y' is not present in all datasets."):
+        concat([da1, da2], dim="x", coords="all")
+
+    da1 = DataArray([1, 2, 3], dims="x", coords={"x": [1, 2, 3], "y": 1})
+    da2 = DataArray([4, 5, 6], dims="x", coords={"x": [4, 5, 6]})
+    da3 = DataArray([7, 8, 9], dims="x", coords={"x": [7, 8, 9], "y": 1})
+    for coords in ["different", "all"]:
+        with raises_regex(ValueError, "'y' not present in all datasets"):
+            concat([da1, da2, da3], dim="x")

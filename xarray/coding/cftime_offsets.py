@@ -42,6 +42,7 @@
 
 import re
 from datetime import timedelta
+from distutils.version import LooseVersion
 from functools import partial
 from typing import ClassVar, Optional
 
@@ -50,7 +51,6 @@ import numpy as np
 from ..core.pdcompat import count_not_none
 from .cftimeindex import CFTimeIndex, _parse_iso8601_with_reso
 from .times import format_cftime_datetime
-from distutils.version import LooseVersion
 
 
 def get_date_type(calendar):
@@ -938,7 +938,7 @@ def cftime_range(
     This function returns a ``CFTimeIndex``, populated with ``cftime.datetime``
     objects associated with the specified calendar type, e.g.
 
-    >>> xr.cftime_range(start='2000', periods=6, freq='2MS', calendar='noleap')
+    >>> xr.cftime_range(start="2000", periods=6, freq="2MS", calendar="noleap")
     CFTimeIndex([2000-01-01 00:00:00, 2000-03-01 00:00:00, 2000-05-01 00:00:00,
                  2000-07-01 00:00:00, 2000-09-01 00:00:00, 2000-11-01 00:00:00],
                 dtype='object')

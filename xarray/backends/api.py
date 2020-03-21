@@ -19,13 +19,16 @@ from typing import (
 
 import numpy as np
 
-from .. import DataArray, Dataset, auto_combine, backends, coding, conventions
+from .. import backends, coding, conventions
 from ..core import indexing
 from ..core.combine import (
     _infer_concat_order_from_positions,
     _nested_combine,
+    auto_combine,
     combine_by_coords,
 )
+from ..core.dataarray import DataArray
+from ..core.dataset import Dataset
 from ..core.utils import close_on_error, is_grib_path, is_remote_uri
 from .common import AbstractDataStore, ArrayWriter
 from .locks import _get_scheduler
@@ -504,7 +507,7 @@ def open_dataset(
         elif engine == "pydap":
             store = backends.PydapDataStore.open(filename_or_obj, **backend_kwargs)
         elif engine == "h5netcdf":
-            store = backends.H5NetCDFStore(
+            store = backends.H5NetCDFStore.open(
                 filename_or_obj, group=group, lock=lock, **backend_kwargs
             )
         elif engine == "pynio":
@@ -528,7 +531,7 @@ def open_dataset(
         if engine == "scipy":
             store = backends.ScipyDataStore(filename_or_obj, **backend_kwargs)
         elif engine == "h5netcdf":
-            store = backends.H5NetCDFStore(
+            store = backends.H5NetCDFStore.open(
                 filename_or_obj, group=group, lock=lock, **backend_kwargs
             )
 
@@ -719,6 +722,7 @@ def open_mfdataset(
     autoclose=None,
     parallel=False,
     join="outer",
+    attrs_file=None,
     **kwargs,
 ):
     """Open multiple files as a single dataset.
@@ -730,8 +734,8 @@ def open_mfdataset(
     ``combine_by_coords`` and ``combine_nested``. By default the old (now deprecated)
     ``auto_combine`` will be used, please specify either ``combine='by_coords'`` or
     ``combine='nested'`` in future. Requires dask to be installed. See documentation for
-    details on dask [1]_. Attributes from the first dataset file are used for the
-    combined dataset.
+    details on dask [1]_. Global attributes from the ``attrs_file`` are used
+    for the combined dataset.
 
     Parameters
     ----------
@@ -828,6 +832,10 @@ def open_mfdataset(
         - 'override': if indexes are of same size, rewrite indexes to be
           those of the first object with that dimension. Indexes for the same
           dimension must have the same size in all objects.
+    attrs_file : str or pathlib.Path, optional
+        Path of the file used to read global attributes from.
+        By default global attributes are read from the first file provided,
+        with wildcard matches sorted by filename.
     **kwargs : optional
         Additional arguments passed on to :py:func:`xarray.open_dataset`.
 
@@ -962,14 +970,22 @@ def open_mfdataset(
         raise
 
     combined._file_obj = _MultiFileCloser(file_objs)
-    combined.attrs = datasets[0].attrs
+
+    # read global attributes from the attrs_file or from the first dataset
+    if attrs_file is not None:
+        if isinstance(attrs_file, Path):
+            attrs_file = str(attrs_file)
+        combined.attrs = datasets[paths.index(attrs_file)].attrs
+    else:
+        combined.attrs = datasets[0].attrs
+
     return combined
 
 
 WRITEABLE_STORES: Dict[str, Callable] = {
     "netcdf4": backends.NetCDF4DataStore.open,
     "scipy": backends.ScipyDataStore,
-    "h5netcdf": backends.H5NetCDFStore,
+    "h5netcdf": backends.H5NetCDFStore.open,
 }
 
 
@@ -1186,8 +1202,8 @@ def save_mfdataset(
 
     Save a dataset into one netCDF per year of data:
 
-    >>> years, datasets = zip(*ds.groupby('time.year'))
-    >>> paths = ['%s.nc' % y for y in years]
+    >>> years, datasets = zip(*ds.groupby("time.year"))
+    >>> paths = ["%s.nc" % y for y in years]
     >>> xr.save_mfdataset(datasets, paths)
     """
     if mode == "w" and len(set(paths)) < len(paths):
@@ -1243,7 +1259,7 @@ def _validate_datatypes_for_zarr_append(dataset):
         if (
             not np.issubdtype(var.dtype, np.number)
             and not np.issubdtype(var.dtype, np.datetime64)
-            and not np.issubdtype(var.dtype, np.bool)
+            and not np.issubdtype(var.dtype, np.bool_)
             and not coding.strings.is_unicode_dtype(var.dtype)
             and not var.dtype == object
         ):

@@ -26,6 +26,7 @@ import numpy as np
 from . import duck_array_ops, utils
 from .alignment import deep_align
 from .merge import merge_coordinates_without_align
+from .options import OPTIONS
 from .pycompat import dask_array_type
 from .utils import is_dict_like
 from .variable import Variable
@@ -304,7 +305,7 @@ def _as_variables_or_variable(arg):
 def _unpack_dict_tuples(
     result_vars: Mapping[Hashable, Tuple[Variable, ...]], num_outputs: int
 ) -> Tuple[Dict[Hashable, Variable], ...]:
-    out = tuple({} for _ in range(num_outputs))  # type: ignore
+    out: Tuple[Dict[Hashable, Variable], ...] = tuple({} for _ in range(num_outputs))
     for name, values in result_vars.items():
         for value, results_dict in zip(values, out):
             results_dict[name] = value
@@ -547,6 +548,7 @@ def apply_variable_ufunc(
     output_dtypes=None,
     output_sizes=None,
     keep_attrs=False,
+    meta=None,
 ):
     """Apply a ndarray level function over Variable and/or ndarray objects.
     """
@@ -589,6 +591,7 @@ def apply_variable_ufunc(
                     signature,
                     output_dtypes,
                     output_sizes,
+                    meta,
                 )
 
         elif dask == "allowed":
@@ -647,7 +650,14 @@ def apply_variable_ufunc(
 
 
 def _apply_blockwise(
-    func, args, input_dims, output_dims, signature, output_dtypes, output_sizes=None
+    func,
+    args,
+    input_dims,
+    output_dims,
+    signature,
+    output_dtypes,
+    output_sizes=None,
+    meta=None,
 ):
     import dask.array
 
@@ -719,6 +729,7 @@ def _apply_blockwise(
         dtype=dtype,
         concatenate=True,
         new_axes=output_sizes,
+        meta=meta,
     )
 
 
@@ -760,6 +771,7 @@ def apply_ufunc(
     dask: str = "forbidden",
     output_dtypes: Sequence = None,
     output_sizes: Mapping[Any, int] = None,
+    meta: Any = None,
 ) -> Any:
     """Apply a vectorized function for unlabeled arrays on xarray objects.
 
@@ -856,6 +868,9 @@ def apply_ufunc(
         Optional mapping from dimension names to sizes for outputs. Only used
         if dask='parallelized' and new dimensions (not found on inputs) appear
         on outputs.
+    meta : optional
+        Size-0 object representing the type of array wrapped by dask array. Passed on to
+        ``dask.array.blockwise``.
 
     Returns
     -------
@@ -874,7 +889,7 @@ def apply_ufunc(
     You can now apply ``magnitude()`` to ``xr.DataArray`` and ``xr.Dataset``
     objects, with automatically preserved dimensions and coordinates, e.g.,
 
-    >>> array = xr.DataArray([1, 2, 3], coords=[('x', [0.1, 0.2, 0.3])])
+    >>> array = xr.DataArray([1, 2, 3], coords=[("x", [0.1, 0.2, 0.3])])
     >>> magnitude(array, -array)
     <xarray.DataArray (x: 3)>
     array([1.414214, 2.828427, 4.242641])
@@ -989,6 +1004,11 @@ def apply_ufunc(
         func = functools.partial(func, **kwargs)
 
     if vectorize:
+        if meta is None:
+            # set meta=np.ndarray by default for numpy vectorized functions
+            # work around dask bug computing meta with vectorized functions: GH5642
+            meta = np.ndarray
+
         if signature.all_core_dims:
             func = np.vectorize(
                 func, otypes=output_dtypes, signature=signature.to_gufunc_string()
@@ -1005,6 +1025,7 @@ def apply_ufunc(
         dask=dask,
         output_dtypes=output_dtypes,
         output_sizes=output_sizes,
+        meta=meta,
     )
 
     if any(isinstance(a, GroupBy) for a in args):
@@ -1019,6 +1040,7 @@ def apply_ufunc(
             dataset_fill_value=dataset_fill_value,
             keep_attrs=keep_attrs,
             dask=dask,
+            meta=meta,
         )
         return apply_groupby_func(this_apply, *args)
     elif any(is_dict_like(a) for a in args):
@@ -1071,10 +1093,9 @@ def dot(*arrays, dims=None, **kwargs):
 
     >>> import numpy as np
     >>> import xarray as xr
-    >>> da_a = xr.DataArray(np.arange(3 * 2).reshape(3, 2), dims=['a', 'b'])
-    >>> da_b = xr.DataArray(np.arange(3 * 2 * 2).reshape(3, 2, 2),
-    ...                     dims=['a', 'b', 'c'])
-    >>> da_c = xr.DataArray(np.arange(2 * 3).reshape(2, 3), dims=['c', 'd'])
+    >>> da_a = xr.DataArray(np.arange(3 * 2).reshape(3, 2), dims=["a", "b"])
+    >>> da_b = xr.DataArray(np.arange(3 * 2 * 2).reshape(3, 2, 2), dims=["a", "b", "c"])
+    >>> da_c = xr.DataArray(np.arange(2 * 3).reshape(2, 3), dims=["c", "d"])
 
     >>> da_a
     <xarray.DataArray (a: 3, b: 2)>
@@ -1099,18 +1120,18 @@ def dot(*arrays, dims=None, **kwargs):
            [3, 4, 5]])
     Dimensions without coordinates: c, d
 
-    >>> xr.dot(da_a, da_b, dims=['a', 'b'])
+    >>> xr.dot(da_a, da_b, dims=["a", "b"])
     <xarray.DataArray (c: 2)>
     array([110, 125])
     Dimensions without coordinates: c
 
-    >>> xr.dot(da_a, da_b, dims=['a'])
+    >>> xr.dot(da_a, da_b, dims=["a"])
     <xarray.DataArray (b: 2, c: 2)>
     array([[40, 46],
            [70, 79]])
     Dimensions without coordinates: b, c
 
-    >>> xr.dot(da_a, da_b, da_c, dims=['b', 'c'])
+    >>> xr.dot(da_a, da_b, da_c, dims=["b", "c"])
     <xarray.DataArray (a: 3, d: 3)>
     array([[  9,  14,  19],
            [ 93, 150, 207],
@@ -1175,6 +1196,11 @@ def dot(*arrays, dims=None, **kwargs):
     subscripts = ",".join(subscripts_list)
     subscripts += "->..." + "".join([dim_map[d] for d in output_core_dims[0]])
 
+    join = OPTIONS["arithmetic_join"]
+    # using "inner" emulates `(a * b).sum()` for all joins (except "exact")
+    if join != "exact":
+        join = "inner"
+
     # subscripts should be passed to np.einsum as arg, not as kwargs. We need
     # to construct a partial function for apply_ufunc to work.
     func = functools.partial(duck_array_ops.einsum, subscripts, **kwargs)
@@ -1183,6 +1209,7 @@ def dot(*arrays, dims=None, **kwargs):
         *arrays,
         input_core_dims=input_core_dims,
         output_core_dims=output_core_dims,
+        join=join,
         dask="allowed",
     )
     return result.transpose(*[d for d in all_dims if d in result.dims])
@@ -1197,9 +1224,13 @@ def where(cond, x, y):
     ----------
     cond : scalar, array, Variable, DataArray or Dataset with boolean dtype
         When True, return values from `x`, otherwise returns values from `y`.
-    x, y : scalar, array, Variable, DataArray or Dataset
-        Values from which to choose. All dimension coordinates on these objects
-        must be aligned with each other and with `cond`.
+    x : scalar, array, Variable, DataArray or Dataset
+        values to choose from where `cond` is True
+    y : scalar, array, Variable, DataArray or Dataset
+        values to choose from where `cond` is False
+
+    All dimension coordinates on these objects must be aligned with each
+    other and with `cond`.
 
     Returns
     -------
@@ -1210,21 +1241,25 @@ def where(cond, x, y):
     --------
     >>> import xarray as xr
     >>> import numpy as np
-    >>> x = xr.DataArray(0.1 * np.arange(10), dims=['lat'],
-    ...                  coords={'lat': np.arange(10)}, name='sst')
+    >>> x = xr.DataArray(
+    ...     0.1 * np.arange(10),
+    ...     dims=["lat"],
+    ...     coords={"lat": np.arange(10)},
+    ...     name="sst",
+    ... )
     >>> x
     <xarray.DataArray 'sst' (lat: 10)>
     array([0. , 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9])
     Coordinates:
     * lat      (lat) int64 0 1 2 3 4 5 6 7 8 9
 
-    >>> xr.where(x < 0.5, x,  100*x)
+    >>> xr.where(x < 0.5, x, x * 100)
     <xarray.DataArray 'sst' (lat: 10)>
     array([ 0. ,  0.1,  0.2,  0.3,  0.4, 50. , 60. , 70. , 80. , 90. ])
     Coordinates:
     * lat      (lat) int64 0 1 2 3 4 5 6 7 8 9
 
-    >>> >>> y = xr.DataArray(
+    >>> y = xr.DataArray(
     ...     0.1 * np.arange(9).reshape(3, 3),
     ...     dims=["lat", "lon"],
     ...     coords={"lat": np.arange(3), "lon": 10 + np.arange(3)},
@@ -1248,8 +1283,8 @@ def where(cond, x, y):
     * lat      (lat) int64 0 1 2
     * lon      (lon) int64 10 11 12
 
-    >>> cond = xr.DataArray([True, False], dims=['x'])
-    >>> x = xr.DataArray([1, 2], dims=['y'])
+    >>> cond = xr.DataArray([True, False], dims=["x"])
+    >>> x = xr.DataArray([1, 2], dims=["y"])
     >>> xr.where(cond, x, 0)
     <xarray.DataArray (x: 2, y: 2)>
     array([[1, 2],
