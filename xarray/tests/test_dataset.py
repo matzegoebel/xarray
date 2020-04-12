@@ -936,19 +936,35 @@ class TestDataset:
         expected_chunks = {"dim1": (8,), "dim2": (9,), "dim3": (10,)}
         assert reblocked.chunks == expected_chunks
 
+        def get_dask_names(ds):
+            return {k: v.data.name for k, v in ds.items()}
+
+        orig_dask_names = get_dask_names(reblocked)
+
         reblocked = data.chunk({"time": 5, "dim1": 5, "dim2": 5, "dim3": 5})
         # time is not a dim in any of the data_vars, so it
         # doesn't get chunked
         expected_chunks = {"dim1": (5, 3), "dim2": (5, 4), "dim3": (5, 5)}
         assert reblocked.chunks == expected_chunks
 
+        # make sure dask names change when rechunking by different amounts
+        # regression test for GH3350
+        new_dask_names = get_dask_names(reblocked)
+        for k, v in new_dask_names.items():
+            assert v != orig_dask_names[k]
+
         reblocked = data.chunk(expected_chunks)
         assert reblocked.chunks == expected_chunks
 
         # reblock on already blocked data
+        orig_dask_names = get_dask_names(reblocked)
         reblocked = reblocked.chunk(expected_chunks)
+        new_dask_names = get_dask_names(reblocked)
         assert reblocked.chunks == expected_chunks
         assert_identical(reblocked, data)
+        # recuhnking with same chunk sizes should not change names
+        for k, v in new_dask_names.items():
+            assert v == orig_dask_names[k]
 
         with raises_regex(ValueError, "some chunks"):
             data.chunk({"foo": 10})
@@ -1391,6 +1407,67 @@ class TestDataset:
                     [np.array(midx[:2]), np.array(midx[-2:])], dims=["a", "b"]
                 )
             )
+
+    def test_sel_categorical(self):
+        ind = pd.Series(["foo", "bar"], dtype="category")
+        df = pd.DataFrame({"ind": ind, "values": [1, 2]})
+        ds = df.set_index("ind").to_xarray()
+        actual = ds.sel(ind="bar")
+        expected = ds.isel(ind=1)
+        assert_identical(expected, actual)
+
+    def test_sel_categorical_error(self):
+        ind = pd.Series(["foo", "bar"], dtype="category")
+        df = pd.DataFrame({"ind": ind, "values": [1, 2]})
+        ds = df.set_index("ind").to_xarray()
+        with pytest.raises(ValueError):
+            ds.sel(ind="bar", method="nearest")
+        with pytest.raises(ValueError):
+            ds.sel(ind="bar", tolerance="nearest")
+
+    def test_categorical_index(self):
+        cat = pd.CategoricalIndex(
+            ["foo", "bar", "foo"],
+            categories=["foo", "bar", "baz", "qux", "quux", "corge"],
+        )
+        ds = xr.Dataset(
+            {"var": ("cat", np.arange(3))},
+            coords={"cat": ("cat", cat), "c": ("cat", [0, 1, 1])},
+        )
+        # test slice
+        actual = ds.sel(cat="foo")
+        expected = ds.isel(cat=[0, 2])
+        assert_identical(expected, actual)
+        # make sure the conversion to the array works
+        actual = ds.sel(cat="foo")["cat"].values
+        assert (actual == np.array(["foo", "foo"])).all()
+
+        ds = ds.set_index(index=["cat", "c"])
+        actual = ds.unstack("index")
+        assert actual["var"].shape == (2, 2)
+
+    def test_categorical_reindex(self):
+        cat = pd.CategoricalIndex(
+            ["foo", "bar", "baz"],
+            categories=["foo", "bar", "baz", "qux", "quux", "corge"],
+        )
+        ds = xr.Dataset(
+            {"var": ("cat", np.arange(3))},
+            coords={"cat": ("cat", cat), "c": ("cat", [0, 1, 2])},
+        )
+        actual = ds.reindex(cat=["foo"])["cat"].values
+        assert (actual == np.array(["foo"])).all()
+
+    def test_categorical_multiindex(self):
+        i1 = pd.Series([0, 0])
+        cat = pd.CategoricalDtype(categories=["foo", "baz", "bar"])
+        i2 = pd.Series(["baz", "bar"], dtype=cat)
+
+        df = pd.DataFrame({"i1": i1, "i2": i2, "values": [1, 2]}).set_index(
+            ["i1", "i2"]
+        )
+        actual = df.to_xarray()
+        assert actual["values"].shape == (1, 2)
 
     def test_sel_drop(self):
         data = Dataset({"foo": ("x", [1, 2, 3])}, {"x": [0, 1, 2]})
@@ -2151,6 +2228,10 @@ class TestDataset:
             actual = data.drop(["time", "not_found_here"], errors="ignore")
         assert_identical(expected, actual)
 
+        with pytest.warns(PendingDeprecationWarning):
+            actual = data.drop({"time", "not_found_here"}, errors="ignore")
+        assert_identical(expected, actual)
+
     def test_drop_index_labels(self):
         data = Dataset({"A": (["x", "y"], np.random.randn(2, 3)), "x": ["a", "b"]})
 
@@ -2444,6 +2525,9 @@ class TestDataset:
         with pytest.raises(ValueError):
             original.rename_dims(dims_dict_bad)
 
+        with pytest.raises(ValueError):
+            original.rename_dims({"x": "z"})
+
     def test_rename_vars(self):
         original = Dataset({"x": ("x", [0, 1, 2]), "y": ("x", [10, 11, 12]), "z": 42})
         expected = Dataset(
@@ -2523,7 +2607,7 @@ class TestDataset:
         assert_identical(expected, actual)
         assert isinstance(actual.variables["y"], IndexVariable)
         assert isinstance(actual.variables["x"], Variable)
-        assert actual.indexes["y"].equals(pd.Index(list("abc")))
+        pd.testing.assert_index_equal(actual.indexes["y"], expected.indexes["y"])
 
         roundtripped = actual.swap_dims({"y": "x"})
         assert_identical(original.set_coords("y"), roundtripped)
@@ -2532,6 +2616,22 @@ class TestDataset:
             original.swap_dims({"y": "x"})
         with raises_regex(ValueError, "replacement dimension"):
             original.swap_dims({"x": "z"})
+
+        expected = Dataset(
+            {"y": ("u", list("abc")), "z": 42}, coords={"x": ("u", [1, 2, 3])}
+        )
+        actual = original.swap_dims({"x": "u"})
+        assert_identical(expected, actual)
+
+        # handle multiindex case
+        idx = pd.MultiIndex.from_arrays([list("aab"), list("yzz")], names=["y1", "y2"])
+        original = Dataset({"x": [1, 2, 3], "y": ("x", idx), "z": 42})
+        expected = Dataset({"z": 42}, {"x": ("y", [1, 2, 3]), "y": idx})
+        actual = original.swap_dims({"x": "y"})
+        assert_identical(expected, actual)
+        assert isinstance(actual.variables["y"], IndexVariable)
+        assert isinstance(actual.variables["x"], Variable)
+        pd.testing.assert_index_equal(actual.indexes["y"], expected.indexes["y"])
 
     def test_expand_dims_error(self):
         original = Dataset(
@@ -2777,6 +2877,17 @@ class TestDataset:
             {"a": ("z", [0, 0, 1, 1]), "b": ("z", [0, 1, 2, 3]), "z": exp_index}
         )
         actual = ds.stack(z=["x", "y"])
+        assert_identical(expected, actual)
+
+        actual = ds.stack(z=[...])
+        assert_identical(expected, actual)
+
+        # non list dims with ellipsis
+        actual = ds.stack(z=(...,))
+        assert_identical(expected, actual)
+
+        # ellipsis with given dim
+        actual = ds.stack(z=[..., "y"])
         assert_identical(expected, actual)
 
         exp_index = pd.MultiIndex.from_product([["a", "b"], [0, 1]], names=["y", "x"])
@@ -3836,6 +3947,21 @@ class TestDataset:
         expected = pd.DataFrame([[]], index=idx)
         assert expected.equals(actual), (expected, actual)
 
+    def test_from_dataframe_categorical(self):
+        cat = pd.CategoricalDtype(
+            categories=["foo", "bar", "baz", "qux", "quux", "corge"]
+        )
+        i1 = pd.Series(["foo", "bar", "foo"], dtype=cat)
+        i2 = pd.Series(["bar", "bar", "baz"], dtype=cat)
+
+        df = pd.DataFrame({"i1": i1, "i2": i2, "values": [1, 2, 3]})
+        ds = df.set_index("i1").to_xarray()
+        assert len(ds["i1"]) == 3
+
+        ds = df.set_index(["i1", "i2"]).to_xarray()
+        assert len(ds["i1"]) == 2
+        assert len(ds["i2"]) == 2
+
     @requires_sparse
     def test_from_dataframe_sparse(self):
         import sparse
@@ -4245,12 +4371,21 @@ class TestDataset:
         assert actual.a.name == "a"
         assert actual.a.attrs == ds.a.attrs
 
+        # lambda
+        ds = Dataset({"a": ("x", range(5))})
+        expected = Dataset({"a": ("x", [np.nan, np.nan, 2, 3, 4])})
+        actual = ds.where(lambda x: x > 1)
+        assert_identical(expected, actual)
+
     def test_where_other(self):
         ds = Dataset({"a": ("x", range(5))}, {"x": range(5)})
         expected = Dataset({"a": ("x", [-1, -1, 2, 3, 4])}, {"x": range(5)})
         actual = ds.where(ds > 1, -1)
         assert_equal(expected, actual)
         assert actual.a.dtype == int
+
+        actual = ds.where(lambda x: x > 1, -1)
+        assert_equal(expected, actual)
 
         with raises_regex(ValueError, "cannot set"):
             ds.where(ds > 1, other=0, drop=True)
@@ -4584,12 +4719,13 @@ class TestDataset:
         )
         assert_identical(expected, actual)
 
+    @pytest.mark.parametrize("skipna", [True, False])
     @pytest.mark.parametrize("q", [0.25, [0.50], [0.25, 0.75]])
-    def test_quantile(self, q):
+    def test_quantile(self, q, skipna):
         ds = create_test_data(seed=123)
 
         for dim in [None, "dim1", ["dim1"]]:
-            ds_quantile = ds.quantile(q, dim=dim)
+            ds_quantile = ds.quantile(q, dim=dim, skipna=skipna)
             if is_scalar(q):
                 assert "quantile" not in ds_quantile.dims
             else:
@@ -4597,11 +4733,26 @@ class TestDataset:
 
             for var, dar in ds.data_vars.items():
                 assert var in ds_quantile
-                assert_identical(ds_quantile[var], dar.quantile(q, dim=dim))
+                assert_identical(
+                    ds_quantile[var], dar.quantile(q, dim=dim, skipna=skipna)
+                )
         dim = ["dim1", "dim2"]
-        ds_quantile = ds.quantile(q, dim=dim)
+        ds_quantile = ds.quantile(q, dim=dim, skipna=skipna)
         assert "dim3" in ds_quantile.dims
         assert all(d not in ds_quantile.dims for d in dim)
+
+    @pytest.mark.parametrize("skipna", [True, False])
+    def test_quantile_skipna(self, skipna):
+        q = 0.1
+        dim = "time"
+        ds = Dataset({"a": ([dim], np.arange(0, 11))})
+        ds = ds.where(ds >= 1)
+
+        result = ds.quantile(q=q, dim=dim, skipna=skipna)
+
+        value = 1.9 if skipna else np.nan
+        expected = Dataset({"a": value}, coords={"quantile": q})
+        assert_identical(result, expected)
 
     @requires_bottleneck
     def test_rank(self):
@@ -5344,6 +5495,19 @@ class TestDataset:
             ds.data_vars[item]  # should not raise
         assert sorted(actual) == sorted(expected)
 
+    def test_pad(self):
+        ds = create_test_data(seed=1)
+        padded = ds.pad(dim2=(1, 1), constant_values=42)
+
+        assert padded["dim2"].shape == (11,)
+        assert padded["var1"].shape == (8, 11)
+        assert padded["var2"].shape == (8, 11)
+        assert padded["var3"].shape == (10, 8)
+        assert dict(padded.dims) == {"dim1": 8, "dim2": 11, "dim3": 10, "time": 20}
+
+        np.testing.assert_equal(padded["var1"].isel(dim2=[0, -1]).data, 42)
+        np.testing.assert_equal(padded["dim2"][[0, -1]].data, np.nan)
+
 
 # Py.test tests
 
@@ -5558,6 +5722,62 @@ def test_coarsen_coords_cftime():
     actual = da.coarsen(time=3).mean()
     expected_times = xr.cftime_range("2000-01-02", freq="3D", periods=2)
     np.testing.assert_array_equal(actual.time, expected_times)
+
+
+def test_coarsen_keep_attrs():
+    _attrs = {"units": "test", "long_name": "testing"}
+
+    var1 = np.linspace(10, 15, 100)
+    var2 = np.linspace(5, 10, 100)
+    coords = np.linspace(1, 10, 100)
+
+    ds = Dataset(
+        data_vars={"var1": ("coord", var1), "var2": ("coord", var2)},
+        coords={"coord": coords},
+        attrs=_attrs,
+    )
+
+    # Test dropped attrs
+    dat = ds.coarsen(coord=5).mean()
+    assert dat.attrs == {}
+
+    # Test kept attrs using dataset keyword
+    dat = ds.coarsen(coord=5, keep_attrs=True).mean()
+    assert dat.attrs == _attrs
+
+    # Test kept attrs using global option
+    with set_options(keep_attrs=True):
+        dat = ds.coarsen(coord=5).mean()
+    assert dat.attrs == _attrs
+
+
+def test_rolling_keep_attrs():
+    _attrs = {"units": "test", "long_name": "testing"}
+
+    var1 = np.linspace(10, 15, 100)
+    var2 = np.linspace(5, 10, 100)
+    coords = np.linspace(1, 10, 100)
+
+    ds = Dataset(
+        data_vars={"var1": ("coord", var1), "var2": ("coord", var2)},
+        coords={"coord": coords},
+        attrs=_attrs,
+    )
+
+    # Test dropped attrs
+    dat = ds.rolling(dim={"coord": 5}, min_periods=None, center=False).mean()
+    assert dat.attrs == {}
+
+    # Test kept attrs using dataset keyword
+    dat = ds.rolling(
+        dim={"coord": 5}, min_periods=None, center=False, keep_attrs=True
+    ).mean()
+    assert dat.attrs == _attrs
+
+    # Test kept attrs using global option
+    with set_options(keep_attrs=True):
+        dat = ds.rolling(dim={"coord": 5}, min_periods=None, center=False).mean()
+    assert dat.attrs == _attrs
 
 
 def test_rolling_properties(ds):
@@ -5846,7 +6066,7 @@ def test_integrate(dask):
     actual = da.integrate("x")
     # coordinate that contains x should be dropped.
     expected_x = xr.DataArray(
-        np.trapz(da, da["x"], axis=0),
+        np.trapz(da.compute(), da["x"], axis=0),
         dims=["y"],
         coords={k: v for k, v in da.coords.items() if "x" not in v.dims},
     )
