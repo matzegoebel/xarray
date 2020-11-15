@@ -5,6 +5,8 @@ import xarray as xr
 from xarray import DataArray
 from xarray.tests import assert_allclose, assert_equal, raises_regex
 
+from . import raise_if_dask_computes, requires_dask
+
 
 @pytest.mark.parametrize("as_dataset", (True, False))
 def test_weighted_non_DataArray_weights(as_dataset):
@@ -27,6 +29,24 @@ def test_weighted_weights_nan_raises(as_dataset, weights):
 
     with pytest.raises(ValueError, match="`weights` cannot contain missing values."):
         data.weighted(DataArray(weights))
+
+
+@requires_dask
+@pytest.mark.parametrize("as_dataset", (True, False))
+@pytest.mark.parametrize("weights", ([np.nan, 2], [np.nan, np.nan]))
+def test_weighted_weights_nan_raises_dask(as_dataset, weights):
+
+    data = DataArray([1, 2]).chunk({"dim_0": -1})
+    if as_dataset:
+        data = data.to_dataset(name="data")
+
+    weights = DataArray(weights).chunk({"dim_0": -1})
+
+    with raise_if_dask_computes():
+        weighted = data.weighted(weights)
+
+    with pytest.raises(ValueError, match="`weights` cannot contain missing values."):
+        weighted.sum().load()
 
 
 @pytest.mark.parametrize(
@@ -55,6 +75,18 @@ def test_weighted_sum_of_weights_nan(weights, expected):
     result = da.weighted(weights).sum_of_weights()
 
     expected = DataArray(expected)
+
+    assert_equal(expected, result)
+
+
+def test_weighted_sum_of_weights_bool():
+    # https://github.com/pydata/xarray/issues/4074
+
+    da = DataArray([1, 2])
+    weights = DataArray([True, True])
+    result = da.weighted(weights).sum_of_weights()
+
+    expected = DataArray(2)
 
     assert_equal(expected, result)
 
@@ -107,7 +139,7 @@ def test_weighted_sum_nan(weights, expected, skipna):
     assert_equal(expected, result)
 
 
-@pytest.mark.filterwarnings("ignore:Mean of empty slice")
+@pytest.mark.filterwarnings("error")
 @pytest.mark.parametrize("da", ([1.0, 2], [1, np.nan], [np.nan, np.nan]))
 @pytest.mark.parametrize("skipna", (True, False))
 @pytest.mark.parametrize("factor", [1, 2, 3.14])
@@ -154,6 +186,17 @@ def test_weighted_mean_nan(weights, expected, skipna):
         expected = DataArray(np.nan)
 
     result = da.weighted(weights).mean(skipna=skipna)
+
+    assert_equal(expected, result)
+
+
+def test_weighted_mean_bool():
+    # https://github.com/pydata/xarray/issues/4074
+    da = DataArray([1, 1])
+    weights = DataArray([True, True])
+    expected = DataArray(1)
+
+    result = da.weighted(weights).mean()
 
     assert_equal(expected, result)
 
@@ -297,7 +340,6 @@ def test_weighted_operations_keep_attr(operation, as_dataset, keep_attrs):
     assert not result.attrs
 
 
-@pytest.mark.xfail(reason="xr.Dataset.map does not copy attrs of DataArrays GH: 3595")
 @pytest.mark.parametrize("operation", ("sum", "mean"))
 def test_weighted_operations_keep_attr_da_in_ds(operation):
     # GH #3595

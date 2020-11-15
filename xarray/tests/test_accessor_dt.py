@@ -6,13 +6,14 @@ import xarray as xr
 
 from . import (
     assert_array_equal,
+    assert_chunks_equal,
     assert_equal,
     assert_identical,
+    raise_if_dask_computes,
     raises_regex,
     requires_cftime,
     requires_dask,
 )
-from .test_dask import assert_chunks_equal, raise_if_dask_computes
 
 
 class TestDatetimeAccessor:
@@ -80,7 +81,7 @@ class TestDatetimeAccessor:
     def test_not_datetime_type(self):
         nontime_data = self.data.copy()
         int_data = np.arange(len(self.data.time)).astype("int8")
-        nontime_data["time"].values = int_data
+        nontime_data = nontime_data.assign_coords(time=int_data)
         with raises_regex(TypeError, "dt"):
             nontime_data.time.dt
 
@@ -213,7 +214,7 @@ class TestTimedeltaAccessor:
     def test_not_datetime_type(self):
         nontime_data = self.data.copy()
         int_data = np.arange(len(self.data.time)).astype("int8")
-        nontime_data["time"].values = int_data
+        nontime_data = nontime_data.assign_coords(time=int_data)
         with raises_regex(TypeError, "dt"):
             nontime_data.time.dt
 

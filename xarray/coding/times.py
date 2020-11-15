@@ -53,14 +53,50 @@ def _netcdf_to_numpy_timeunit(units):
     }[units]
 
 
+def _ensure_padded_year(ref_date):
+    # Reference dates without a padded year (e.g. since 1-1-1 or since 2-3-4)
+    # are ambiguous (is it YMD or DMY?). This can lead to some very odd
+    # behaviour e.g. pandas (via dateutil) passes '1-1-1 00:00:0.0' as
+    # '2001-01-01 00:00:00' (because it assumes a) DMY and b) that year 1 is
+    # shorthand for 2001 (like 02 would be shorthand for year 2002)).
+
+    # Here we ensure that there is always a four-digit year, with the
+    # assumption being that year comes first if we get something ambiguous.
+    matches_year = re.match(r".*\d{4}.*", ref_date)
+    if matches_year:
+        # all good, return
+        return ref_date
+
+    # No four-digit strings, assume the first digits are the year and pad
+    # appropriately
+    matches_start_digits = re.match(r"(\d+)(.*)", ref_date)
+    ref_year, everything_else = [s for s in matches_start_digits.groups()]
+    ref_date_padded = "{:04d}{}".format(int(ref_year), everything_else)
+
+    warning_msg = (
+        f"Ambiguous reference date string: {ref_date}. The first value is "
+        "assumed to be the year hence will be padded with zeros to remove "
+        f"the ambiguity (the padded reference date string is: {ref_date_padded}). "
+        "To remove this message, remove the ambiguity by padding your reference "
+        "date strings with zeros."
+    )
+    warnings.warn(warning_msg, SerializationWarning)
+
+    return ref_date_padded
+
+
 def _unpack_netcdf_time_units(units):
     # CF datetime units follow the format: "UNIT since DATE"
     # this parses out the unit and date allowing for extraneous
-    # whitespace.
-    matches = re.match("(.+) since (.+)", units)
+    # whitespace. It also ensures that the year is padded with zeros
+    # so it will be correctly understood by pandas (via dateutil).
+    matches = re.match(r"(.+) since (.+)", units)
     if not matches:
-        raise ValueError("invalid time units: %s" % units)
+        raise ValueError(f"invalid time units: {units}")
+
     delta_units, ref_date = [s.strip() for s in matches.groups()]
+    ref_date = _ensure_padded_year(ref_date)
+
     return delta_units, ref_date
 
 
@@ -80,8 +116,9 @@ def _decode_cf_datetime_dtype(data, units, calendar, use_cftime):
             "the default calendar" if calendar is None else "calendar %r" % calendar
         )
         msg = (
-            "unable to decode time units %r with %s. Try "
-            "opening your dataset with decode_times=False." % (units, calendar_msg)
+            f"unable to decode time units {units!r} with {calendar_msg!r}. Try "
+            "opening your dataset with decode_times=False or installing cftime "
+            "if it is not installed."
         )
         raise ValueError(msg)
     else:
@@ -155,9 +192,9 @@ def decode_cf_datetime(num_dates, units, calendar=None, use_cftime=None):
     if use_cftime is None:
         try:
             dates = _decode_datetime_with_pandas(flat_num_dates, units, calendar)
-        except (OutOfBoundsDatetime, OverflowError):
+        except (KeyError, OutOfBoundsDatetime, OverflowError):
             dates = _decode_datetime_with_cftime(
-                flat_num_dates.astype(np.float), units, calendar
+                flat_num_dates.astype(float), units, calendar
             )
 
             if (
@@ -178,7 +215,7 @@ def decode_cf_datetime(num_dates, units, calendar=None, use_cftime=None):
                     dates = cftime_to_nptime(dates)
     elif use_cftime:
         dates = _decode_datetime_with_cftime(
-            flat_num_dates.astype(np.float), units, calendar
+            flat_num_dates.astype(float), units, calendar
         )
     else:
         dates = _decode_datetime_with_pandas(flat_num_dates, units, calendar)

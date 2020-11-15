@@ -7,6 +7,7 @@ import pytest
 
 import xarray as xr
 from xarray.core import formatting
+from xarray.core.npcompat import IS_NEP18_ACTIVE
 
 from . import raises_regex
 
@@ -115,7 +116,7 @@ class TestFormatting:
 
     def test_format_array_flat(self):
         actual = formatting.format_array_flat(np.arange(100), 2)
-        expected = "0 ... 99"
+        expected = "..."
         assert expected == actual
 
         actual = formatting.format_array_flat(np.arange(100), 9)
@@ -134,11 +135,13 @@ class TestFormatting:
         expected = "0 1 2 ... 98 99"
         assert expected == actual
 
+        # NB: Probably not ideal; an alternative would be cutting after the
+        # first ellipsis
         actual = formatting.format_array_flat(np.arange(100.0), 11)
-        expected = "0.0 ... 99.0"
+        expected = "0.0 ... ..."
         assert expected == actual
 
-        actual = formatting.format_array_flat(np.arange(100.0), 1)
+        actual = formatting.format_array_flat(np.arange(100.0), 12)
         expected = "0.0 ... 99.0"
         assert expected == actual
 
@@ -154,16 +157,25 @@ class TestFormatting:
         expected = ""
         assert expected == actual
 
-        actual = formatting.format_array_flat(np.arange(1), 0)
+        actual = formatting.format_array_flat(np.arange(1), 1)
         expected = "0"
         assert expected == actual
 
-        actual = formatting.format_array_flat(np.arange(2), 0)
+        actual = formatting.format_array_flat(np.arange(2), 3)
         expected = "0 1"
         assert expected == actual
 
-        actual = formatting.format_array_flat(np.arange(4), 0)
-        expected = "0 ... 3"
+        actual = formatting.format_array_flat(np.arange(4), 7)
+        expected = "0 1 2 3"
+        assert expected == actual
+
+        actual = formatting.format_array_flat(np.arange(5), 7)
+        expected = "0 ... 4"
+        assert expected == actual
+
+        long_str = [" ".join(["hello world" for _ in range(100)])]
+        actual = formatting.format_array_flat(np.asarray([long_str]), 21)
+        expected = "'hello world hello..."
         assert expected == actual
 
     def test_pretty_print(self):
@@ -380,6 +392,44 @@ class TestFormatting:
         assert actual == expected
 
 
+@pytest.mark.skipif(not IS_NEP18_ACTIVE, reason="requires __array_function__")
+def test_inline_variable_array_repr_custom_repr():
+    class CustomArray:
+        def __init__(self, value, attr):
+            self.value = value
+            self.attr = attr
+
+        def _repr_inline_(self, width):
+            formatted = f"({self.attr}) {self.value}"
+            if len(formatted) > width:
+                formatted = f"({self.attr}) ..."
+
+            return formatted
+
+        def __array_function__(self, *args, **kwargs):
+            return NotImplemented
+
+        @property
+        def shape(self):
+            return self.value.shape
+
+        @property
+        def dtype(self):
+            return self.value.dtype
+
+        @property
+        def ndim(self):
+            return self.value.ndim
+
+    value = CustomArray(np.array([20, 40]), "m")
+    variable = xr.Variable("x", value)
+
+    max_width = 10
+    actual = formatting.inline_variable_array_repr(variable, max_width=10)
+
+    assert actual == value._repr_inline_(max_width)
+
+
 def test_set_numpy_options():
     original_options = np.get_printoptions()
     with formatting.set_numpy_options(threshold=10):
@@ -394,10 +444,19 @@ def test_short_numpy_repr():
         np.random.randn(20, 20),
         np.random.randn(5, 10, 15),
         np.random.randn(5, 10, 15, 3),
+        np.random.randn(100, 5, 1),
     ]
     # number of lines:
-    # for default numpy repr: 167, 140, 254, 248
-    # for short_numpy_repr: 1, 7, 24, 19
+    # for default numpy repr: 167, 140, 254, 248, 599
+    # for short_numpy_repr: 1, 7, 24, 19, 25
     for array in cases:
         num_lines = formatting.short_numpy_repr(array).count("\n") + 1
         assert num_lines < 30
+
+
+def test_large_array_repr_length():
+
+    da = xr.DataArray(np.random.randn(100, 5, 1))
+
+    result = repr(da).splitlines()
+    assert len(result) < 50

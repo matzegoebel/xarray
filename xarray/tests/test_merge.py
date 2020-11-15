@@ -3,6 +3,7 @@ import pytest
 
 import xarray as xr
 from xarray.core import dtypes, merge
+from xarray.core.merge import MergeError
 from xarray.testing import assert_identical
 
 from . import raises_regex
@@ -48,6 +49,65 @@ class TestMergeFunction:
         data = xr.DataArray([1, 2], dims="x")
         with raises_regex(ValueError, "without providing an explicit name"):
             xr.merge([data])
+
+    def test_merge_arrays_attrs_default(self):
+        var1_attrs = {"a": 1, "b": 2}
+        var2_attrs = {"a": 1, "c": 3}
+        expected_attrs = {}
+
+        data = create_test_data()
+        data.var1.attrs = var1_attrs
+        data.var2.attrs = var2_attrs
+        actual = xr.merge([data.var1, data.var2])
+        expected = data[["var1", "var2"]]
+        expected.attrs = expected_attrs
+        assert actual.identical(expected)
+
+    @pytest.mark.parametrize(
+        "combine_attrs, var1_attrs, var2_attrs, expected_attrs, expect_exception",
+        [
+            (
+                "no_conflicts",
+                {"a": 1, "b": 2},
+                {"a": 1, "c": 3},
+                {"a": 1, "b": 2, "c": 3},
+                False,
+            ),
+            ("no_conflicts", {"a": 1, "b": 2}, {}, {"a": 1, "b": 2}, False),
+            ("no_conflicts", {}, {"a": 1, "c": 3}, {"a": 1, "c": 3}, False),
+            (
+                "no_conflicts",
+                {"a": 1, "b": 2},
+                {"a": 4, "c": 3},
+                {"a": 1, "b": 2, "c": 3},
+                True,
+            ),
+            ("drop", {"a": 1, "b": 2}, {"a": 1, "c": 3}, {}, False),
+            ("identical", {"a": 1, "b": 2}, {"a": 1, "b": 2}, {"a": 1, "b": 2}, False),
+            ("identical", {"a": 1, "b": 2}, {"a": 1, "c": 3}, {"a": 1, "b": 2}, True),
+            (
+                "override",
+                {"a": 1, "b": 2},
+                {"a": 4, "b": 5, "c": 3},
+                {"a": 1, "b": 2},
+                False,
+            ),
+        ],
+    )
+    def test_merge_arrays_attrs(
+        self, combine_attrs, var1_attrs, var2_attrs, expected_attrs, expect_exception
+    ):
+        data = create_test_data()
+        data.var1.attrs = var1_attrs
+        data.var2.attrs = var2_attrs
+        if expect_exception:
+            with raises_regex(MergeError, "combine_attrs"):
+                actual = xr.merge([data.var1, data.var2], combine_attrs=combine_attrs)
+        else:
+            actual = xr.merge([data.var1, data.var2], combine_attrs=combine_attrs)
+            expected = data[["var1", "var2"]]
+            expected.attrs = expected_attrs
+            assert actual.identical(expected)
 
     def test_merge_dicts_simple(self):
         actual = xr.merge([{"foo": 0}, {"bar": "one"}, {"baz": 3.5}])
@@ -216,16 +276,22 @@ class TestMergeMethod:
         assert expected.identical(ds1.merge(ds2, join="inner"))
         assert expected.identical(ds2.merge(ds1, join="inner"))
 
-    @pytest.mark.parametrize("fill_value", [dtypes.NA, 2, 2.0])
+    @pytest.mark.parametrize("fill_value", [dtypes.NA, 2, 2.0, {"a": 2, "b": 1}])
     def test_merge_fill_value(self, fill_value):
         ds1 = xr.Dataset({"a": ("x", [1, 2]), "x": [0, 1]})
         ds2 = xr.Dataset({"b": ("x", [3, 4]), "x": [1, 2]})
         if fill_value == dtypes.NA:
             # if we supply the default, we expect the missing value for a
             # float array
-            fill_value = np.nan
+            fill_value_a = fill_value_b = np.nan
+        elif isinstance(fill_value, dict):
+            fill_value_a = fill_value["a"]
+            fill_value_b = fill_value["b"]
+        else:
+            fill_value_a = fill_value_b = fill_value
+
         expected = xr.Dataset(
-            {"a": ("x", [1, 2, fill_value]), "b": ("x", [fill_value, 3, 4])},
+            {"a": ("x", [1, 2, fill_value_a]), "b": ("x", [fill_value_b, 3, 4])},
             {"x": [0, 1, 2]},
         )
         assert expected.identical(ds1.merge(ds2, fill_value=fill_value))

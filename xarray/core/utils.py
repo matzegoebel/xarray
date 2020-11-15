@@ -24,6 +24,7 @@ from typing import (
     Sequence,
     Tuple,
     TypeVar,
+    Union,
     cast,
 )
 
@@ -115,7 +116,7 @@ def multiindex_from_product_levels(
     ----------
     levels : sequence of pd.Index
         Values for each MultiIndex level.
-    names : optional sequence of objects
+    names : sequence of str, optional
         Names for each level.
 
     Returns
@@ -184,7 +185,7 @@ def peek_at(iterable: Iterable[T]) -> Tuple[T, Iterator[T]]:
 
 
 def update_safety_check(
-    first_dict: MutableMapping[K, V],
+    first_dict: Mapping[K, V],
     second_dict: Mapping[K, V],
     compat: Callable[[V, V], bool] = equivalent,
 ) -> None:
@@ -246,6 +247,18 @@ def is_list_like(value: Any) -> bool:
     return isinstance(value, list) or isinstance(value, tuple)
 
 
+def is_duck_array(value: Any) -> bool:
+    if isinstance(value, np.ndarray):
+        return True
+    return (
+        hasattr(value, "ndim")
+        and hasattr(value, "shape")
+        and hasattr(value, "dtype")
+        and hasattr(value, "__array_function__")
+        and hasattr(value, "__array_ufunc__")
+    )
+
+
 def either_dict_or_kwargs(
     pos_kwargs: Optional[Mapping[Hashable, T]],
     kw_kwargs: Mapping[str, T],
@@ -297,16 +310,14 @@ def is_valid_numpy_dtype(dtype: Any) -> bool:
 
 
 def to_0d_object_array(value: Any) -> np.ndarray:
-    """Given a value, wrap it in a 0-D numpy.ndarray with dtype=object.
-    """
+    """Given a value, wrap it in a 0-D numpy.ndarray with dtype=object."""
     result = np.empty((), dtype=object)
     result[()] = value
     return result
 
 
 def to_0d_array(value: Any) -> np.ndarray:
-    """Given a value, wrap it in a 0-D numpy.ndarray.
-    """
+    """Given a value, wrap it in a 0-D numpy.ndarray."""
     if np.isscalar(value) or (isinstance(value, np.ndarray) and value.ndim == 0):
         return np.array(value)
     else:
@@ -343,7 +354,7 @@ def dict_equiv(
     return True
 
 
-def ordered_dict_intersection(
+def compat_dict_intersection(
     first_dict: Mapping[K, V],
     second_dict: Mapping[K, V],
     compat: Callable[[V, V], bool] = equivalent,
@@ -368,6 +379,35 @@ def ordered_dict_intersection(
     """
     new_dict = dict(first_dict)
     remove_incompatible_items(new_dict, second_dict, compat)
+    return new_dict
+
+
+def compat_dict_union(
+    first_dict: Mapping[K, V],
+    second_dict: Mapping[K, V],
+    compat: Callable[[V, V], bool] = equivalent,
+) -> MutableMapping[K, V]:
+    """Return the union of two dictionaries as a new dictionary.
+
+    An exception is raised if any keys are found in both dictionaries and the
+    values are not compatible.
+
+    Parameters
+    ----------
+    first_dict, second_dict : dict-like
+        Mappings to merge.
+    compat : function, optional
+        Binary operator to determine if two values are compatible. By default,
+        checks for equivalence.
+
+    Returns
+    -------
+    union : dict
+        union of the contents.
+    """
+    new_dict = dict(first_dict)
+    update_safety_check(first_dict, second_dict, compat)
+    new_dict.update(second_dict)
     return new_dict
 
 
@@ -423,7 +463,8 @@ class SortedKeysDict(MutableMapping[K, V]):
         del self.mapping[key]
 
     def __iter__(self) -> Iterator[K]:
-        return iter(sorted(self.mapping))
+        # see #4571 for the reason of the type ignore
+        return iter(sorted(self.mapping))  # type: ignore
 
     def __len__(self) -> int:
         return len(self.mapping)
@@ -530,8 +571,7 @@ class NDArrayMixin(NdimSizeLenMixin):
 
 
 class ReprObject:
-    """Object that prints as the given value, for use with sentinel values.
-    """
+    """Object that prints as the given value, for use with sentinel values."""
 
     __slots__ = ("_value",)
 
@@ -592,8 +632,7 @@ def is_uniform_spaced(arr, **kwargs) -> bool:
 
 
 def hashable(v: Any) -> bool:
-    """Determine whether `v` can be hashed.
-    """
+    """Determine whether `v` can be hashed."""
     try:
         hash(v)
     except TypeError:
@@ -629,8 +668,7 @@ def ensure_us_time_resolution(val):
 
 
 class HiddenKeyDict(MutableMapping[K, V]):
-    """Acts like a normal dictionary, but hides certain keys.
-    """
+    """Acts like a normal dictionary, but hides certain keys."""
 
     __slots__ = ("_data", "_hidden_keys")
 
@@ -692,7 +730,7 @@ def infix_dims(dims_supplied: Collection, dims_all: Collection) -> Iterator:
 
 
 def get_temp_dimname(dims: Container[Hashable], new_dim: Hashable) -> Hashable:
-    """ Get an new dimension name based on new_dim, that is not used in dims.
+    """Get an new dimension name based on new_dim, that is not used in dims.
     If the same name exists, we add an underscore(s) in the head.
 
     Example1:
@@ -707,6 +745,72 @@ def get_temp_dimname(dims: Container[Hashable], new_dim: Hashable) -> Hashable:
     while new_dim in dims:
         new_dim = "_" + str(new_dim)
     return new_dim
+
+
+def drop_dims_from_indexers(
+    indexers: Mapping[Hashable, Any],
+    dims: Union[list, Mapping[Hashable, int]],
+    missing_dims: str,
+) -> Mapping[Hashable, Any]:
+    """Depending on the setting of missing_dims, drop any dimensions from indexers that
+    are not present in dims.
+
+    Parameters
+    ----------
+    indexers : dict
+    dims : sequence
+    missing_dims : {"raise", "warn", "ignore"}
+    """
+
+    if missing_dims == "raise":
+        invalid = indexers.keys() - set(dims)
+        if invalid:
+            raise ValueError(
+                f"dimensions {invalid} do not exist. Expected one or more of {dims}"
+            )
+
+        return indexers
+
+    elif missing_dims == "warn":
+
+        # don't modify input
+        indexers = dict(indexers)
+
+        invalid = indexers.keys() - set(dims)
+        if invalid:
+            warnings.warn(
+                f"dimensions {invalid} do not exist. Expected one or more of {dims}"
+            )
+        for key in invalid:
+            indexers.pop(key)
+
+        return indexers
+
+    elif missing_dims == "ignore":
+        return {key: val for key, val in indexers.items() if key in dims}
+
+    else:
+        raise ValueError(
+            f"Unrecognised option {missing_dims} for missing_dims argument"
+        )
+
+
+class UncachedAccessor:
+    """Acts like a property, but on both classes and class instances
+
+    This class is necessary because some tools (e.g. pydoc and sphinx)
+    inspect classes for which property returns itself and not the
+    accessor.
+    """
+
+    def __init__(self, accessor):
+        self._accessor = accessor
+
+    def __get__(self, obj, cls):
+        if obj is None:
+            return self._accessor
+
+        return self._accessor(obj)
 
 
 # Singleton type, as per https://github.com/python/typing/pull/240

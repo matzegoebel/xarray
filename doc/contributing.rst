@@ -40,8 +40,8 @@ report will allow others to reproduce the bug and provide insight into fixing. S
 `this stackoverflow article <https://stackoverflow.com/help/mcve>`_ for tips on
 writing a good bug report.
 
-Trying the bug-producing code out on the *master* branch is often a worthwhile exercise
-to confirm the bug still exists. It is also worth searching existing bug reports and
+Trying out the bug-producing code on the *master* branch is often a worthwhile exercise
+to confirm that the bug still exists. It is also worth searching existing bug reports and
 pull requests to see if the issue has already been reported and/or fixed.
 
 Bug reports must:
@@ -148,7 +148,7 @@ We'll now kick off a two-step process:
 1. Install the build dependencies
 2. Build and install xarray
 
-.. code-block:: none
+.. code-block:: sh
 
    # Create and activate the build environment
    # This is for Linux and MacOS. On Windows, use py37-windows.yml instead.
@@ -162,7 +162,10 @@ We'll now kick off a two-step process:
    # Build and install xarray
    pip install -e .
 
-At this point you should be able to import *xarray* from your locally built version::
+At this point you should be able to import *xarray* from your locally
+built version:
+
+.. code-block:: sh
 
    $ python  # start an interpreter
    >>> import xarray
@@ -186,7 +189,7 @@ Creating a branch
 -----------------
 
 You want your master branch to reflect only production-ready code, so create a
-feature branch for making your changes. For example::
+feature branch before making your changes. For example::
 
     git branch shiny-new-feature
     git checkout shiny-new-feature
@@ -203,12 +206,12 @@ and switch in between them using the ``git checkout`` command.
 To update this branch, you need to retrieve the changes from the master branch::
 
     git fetch upstream
-    git rebase upstream/master
+    git merge upstream/master
 
-This will replay your commits on top of the latest *xarray* git master.  If this
+This will combine your commits with the latest *xarray* git master.  If this
 leads to merge conflicts, you must resolve these before submitting your pull
 request.  If you have uncommitted changes, you will need to ``git stash`` them
-prior to updating.  This will effectively store your changes and they can be
+prior to updating.  This will effectively store your changes, which can be
 reapplied after updating.
 
 .. _contributing.documentation:
@@ -249,30 +252,32 @@ Some other important things to know about the docs:
 - The docstrings follow the **Numpy Docstring Standard**, which is used widely
   in the Scientific Python community. This standard specifies the format of
   the different sections of the docstring. See `this document
-  <https://github.com/numpy/numpy/blob/master/doc/HOWTO_DOCUMENT.rst.txt>`_
+  <https://numpydoc.readthedocs.io/en/latest/format.html#docstring-standard>`_
   for a detailed explanation, or look at some of the existing functions to
   extend it in a similar manner.
 
 - The tutorials make heavy use of the `ipython directive
   <http://matplotlib.org/sampledoc/ipython_directive.html>`_ sphinx extension.
   This directive lets you put code in the documentation which will be run
-  during the doc build. For example::
+  during the doc build. For example:
+
+  .. code:: rst
 
       .. ipython:: python
 
           x = 2
-          x**3
+          x ** 3
 
   will be rendered as::
 
       In [1]: x = 2
 
-      In [2]: x**3
+      In [2]: x ** 3
       Out[2]: 8
 
   Almost all code examples in the docs are run (and the output saved) during the
   doc build. This approach means that code examples will always be up to date,
-  but it does make the doc building a bit more complex.
+  but it does make building the docs a bit more complex.
 
 - Our API documentation in ``doc/api.rst`` houses the auto-generated
   documentation from the docstrings. For classes, there are a few subtleties
@@ -290,7 +295,7 @@ Requirements
 Make sure to follow the instructions on :ref:`creating a development environment above <contributing.dev_env>`, but
 to build the docs you need to use the environment file ``ci/requirements/doc.yml``.
 
-.. code-block:: none
+.. code-block:: sh
 
     # Create and activate the docs environment
     conda env create -f ci/requirements/doc.yml
@@ -313,7 +318,7 @@ Then you can find the HTML output in the folder ``xarray/doc/_build/html/``.
 
 The first time you build the docs, it will take quite a while because it has to run
 all the code examples and build all the generated docstring pages. In subsequent
-evocations, sphinx will try to only build the pages that have been modified.
+evocations, Sphinx will try to only build the pages that have been modified.
 
 If you want to do a full clean build, do::
 
@@ -347,7 +352,10 @@ Code Formatting
 
 xarray uses several tools to ensure a consistent code format throughout the project:
 
-- `Black <https://black.readthedocs.io/en/stable/>`_ for standardized code formatting
+- `Black <https://black.readthedocs.io/en/stable/>`_ for standardized
+  code formatting
+- `blackdoc <https://blackdoc.readthedocs.io/en/stable/>`_ for
+  standardized code formatting in documentation
 - `Flake8 <http://flake8.pycqa.org/en/latest/>`_ for general code quality
 - `isort <https://github.com/timothycrosley/isort>`_ for standardized order in imports.
   See also `flake8-isort <https://github.com/gforcada/flake8-isort>`_.
@@ -356,12 +364,13 @@ xarray uses several tools to ensure a consistent code format throughout the proj
 
 ``pip``::
 
-   pip install black flake8 isort mypy
+   pip install black flake8 isort mypy blackdoc
 
-and then run from the root of the Xarray repository::
+and then run from the root of the xarray repository::
 
-   isort -rc .
+   isort .
    black -t py36 .
+   blackdoc -t py36 .
    flake8
    mypy .
 
@@ -431,7 +440,7 @@ taken from the original GitHub issue.  However, it is always worth considering a
 use cases and writing corresponding tests.
 
 Adding tests is one of the most common requests after code is pushed to *xarray*.  Therefore,
-it is worth getting in the habit of writing tests ahead of time so this is never an issue.
+it is worth getting in the habit of writing tests ahead of time so that this is never an issue.
 
 Like many packages, *xarray* uses `pytest
 <http://doc.pytest.org/en/latest/>`_ and the convenient
@@ -467,7 +476,7 @@ typically find tests wrapped in a class.
 .. code-block:: python
 
     class TestReallyCoolFeature:
-        ....
+        ...
 
 Going forward, we are moving to a more *functional* style using the
 `pytest <http://doc.pytest.org/en/latest/>`__ framework, which offers a richer
@@ -477,7 +486,7 @@ writing test classes, we will write test functions like this:
 .. code-block:: python
 
     def test_really_cool_feature():
-        ....
+        ...
 
 Using ``pytest``
 ~~~~~~~~~~~~~~~~
@@ -508,17 +517,23 @@ We would name this file ``test_cool_feature.py`` and put in an appropriate place
     from xarray.testing import assert_equal
 
 
-    @pytest.mark.parametrize('dtype', ['int8', 'int16', 'int32', 'int64'])
+    @pytest.mark.parametrize("dtype", ["int8", "int16", "int32", "int64"])
     def test_dtypes(dtype):
         assert str(np.dtype(dtype)) == dtype
 
 
-    @pytest.mark.parametrize('dtype', ['float32',
-                             pytest.param('int16', marks=pytest.mark.skip),
-                             pytest.param('int32', marks=pytest.mark.xfail(
-                                reason='to show how it works'))])
+    @pytest.mark.parametrize(
+        "dtype",
+        [
+            "float32",
+            pytest.param("int16", marks=pytest.mark.skip),
+            pytest.param(
+                "int32", marks=pytest.mark.xfail(reason="to show how it works")
+            ),
+        ],
+    )
     def test_mark(dtype):
-        assert str(np.dtype(dtype)) == 'float32'
+        assert str(np.dtype(dtype)) == "float32"
 
 
     @pytest.fixture
@@ -526,7 +541,7 @@ We would name this file ``test_cool_feature.py`` and put in an appropriate place
         return xr.DataArray([1, 2, 3])
 
 
-    @pytest.fixture(params=['int8', 'int16', 'int32', 'int64'])
+    @pytest.fixture(params=["int8", "int16", "int32", "int64"])
     def dtype(request):
         return request.param
 
@@ -610,7 +625,7 @@ need to install `pytest-xdist` via::
     pip install pytest-xdist
 
 
-Then, run pytest with the optional -n argument:
+Then, run pytest with the optional -n argument::
 
     pytest xarray -n 4
 
@@ -797,7 +812,7 @@ release.  To submit a pull request:
 This request then goes to the repository maintainers, and they will review
 the code. If you need to make more changes, you can make them in
 your branch, add them to a new commit, push them to GitHub, and the pull request
-will be automatically updated.  Pushing them to GitHub again is done by::
+will automatically be updated.  Pushing them to GitHub again is done by::
 
     git push origin shiny-new-feature
 
@@ -809,8 +824,7 @@ Delete your merged branch (optional)
 ------------------------------------
 
 Once your feature branch is accepted into upstream, you'll probably want to get rid of
-the branch. First, merge upstream master into your branch so git knows it is safe to
-delete your branch::
+the branch. First, update your ``master`` branch to check that the merge was successful::
 
     git fetch upstream
     git checkout master
@@ -818,12 +832,14 @@ delete your branch::
 
 Then you can do::
 
-    git branch -d shiny-new-feature
+    git branch -D shiny-new-feature
 
-Make sure you use a lower-case ``-d``, or else git won't warn you if your feature
-branch has not actually been merged.
+You need to use a upper-case ``-D`` because the branch was squashed into a
+single commit before merging. Be careful with this because ``git`` won't warn
+you if you accidentally delete an unmerged branch.
 
-The branch will still exist on GitHub, so to delete it there do::
+If you didn't delete your branch using GitHub's interface, then it will still exist on
+GitHub. To delete it there do::
 
     git push origin --delete shiny-new-feature
 
@@ -844,4 +860,4 @@ PR checklist
     - Run ``flake8`` in the root directory. If this fails, it will log an error message.
 
 - **Push your code and** `create a PR on GitHub <https://help.github.com/en/articles/creating-a-pull-request>`_.
-- **Use a helpful title for your pull request** by summarizing the main contributions rather than using the latest commit message. If this addresses an `issue <https://github.com/pydata/xarray/issues>`_, please `reference it <https://help.github.com/en/articles/autolinked-references-and-urls>`_.
+- **Use a helpful title for your pull request** by summarizing the main contributions rather than using the latest commit message. If the PR addresses an `issue <https://github.com/pydata/xarray/issues>`_, please `reference it <https://help.github.com/en/articles/autolinked-references-and-urls>`_.

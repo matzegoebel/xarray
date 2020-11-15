@@ -21,15 +21,18 @@ Top-level functions
    broadcast
    concat
    merge
-   auto_combine
    combine_by_coords
    combine_nested
    where
    set_options
+   infer_freq
    full_like
    zeros_like
    ones_like
+   cov
+   corr
    dot
+   polyval
    map_blocks
    show_versions
    set_options
@@ -172,12 +175,16 @@ Computation
    Dataset.quantile
    Dataset.differentiate
    Dataset.integrate
+   Dataset.map_blocks
+   Dataset.polyfit
 
 **Aggregation**:
 :py:attr:`~Dataset.all`
 :py:attr:`~Dataset.any`
 :py:attr:`~Dataset.argmax`
 :py:attr:`~Dataset.argmin`
+:py:attr:`~Dataset.idxmax`
+:py:attr:`~Dataset.idxmin`
 :py:attr:`~Dataset.max`
 :py:attr:`~Dataset.mean`
 :py:attr:`~Dataset.median`
@@ -224,6 +231,15 @@ Reshaping and reorganizing
    Dataset.pad
    Dataset.sortby
    Dataset.broadcast_like
+
+Plotting
+--------
+
+.. autosummary::
+   :toctree: generated/
+   :template: autosummary/accessor_method.rst
+
+   Dataset.plot.scatter
 
 DataArray
 =========
@@ -344,7 +360,6 @@ Computation
    DataArray.rolling_exp
    DataArray.weighted
    DataArray.coarsen
-   DataArray.dt
    DataArray.resample
    DataArray.get_axis_num
    DataArray.diff
@@ -352,13 +367,17 @@ Computation
    DataArray.quantile
    DataArray.differentiate
    DataArray.integrate
-   DataArray.str
+   DataArray.polyfit
+   DataArray.map_blocks
+
 
 **Aggregation**:
 :py:attr:`~DataArray.all`
 :py:attr:`~DataArray.any`
 :py:attr:`~DataArray.argmax`
 :py:attr:`~DataArray.argmin`
+:py:attr:`~DataArray.idxmax`
+:py:attr:`~DataArray.idxmin`
 :py:attr:`~DataArray.max`
 :py:attr:`~DataArray.mean`
 :py:attr:`~DataArray.median`
@@ -390,6 +409,122 @@ Computation
 :py:attr:`~core.groupby.DataArrayGroupBy.where`
 :py:attr:`~core.groupby.DataArrayGroupBy.quantile`
 
+
+String manipulation
+-------------------
+
+.. autosummary::
+   :toctree: generated/
+   :template: autosummary/accessor_method.rst
+
+   DataArray.str.capitalize
+   DataArray.str.center
+   DataArray.str.contains
+   DataArray.str.count
+   DataArray.str.decode
+   DataArray.str.encode
+   DataArray.str.endswith
+   DataArray.str.find
+   DataArray.str.get
+   DataArray.str.index
+   DataArray.str.isalnum
+   DataArray.str.isalpha
+   DataArray.str.isdecimal
+   DataArray.str.isdigit
+   DataArray.str.isnumeric
+   DataArray.str.isspace
+   DataArray.str.istitle
+   DataArray.str.isupper
+   DataArray.str.len
+   DataArray.str.ljust
+   DataArray.str.lower
+   DataArray.str.lstrip
+   DataArray.str.match
+   DataArray.str.pad
+   DataArray.str.repeat
+   DataArray.str.replace
+   DataArray.str.rfind
+   DataArray.str.rindex
+   DataArray.str.rjust
+   DataArray.str.rstrip
+   DataArray.str.slice
+   DataArray.str.slice_replace
+   DataArray.str.startswith
+   DataArray.str.strip
+   DataArray.str.swapcase
+   DataArray.str.title
+   DataArray.str.translate
+   DataArray.str.upper
+   DataArray.str.wrap
+   DataArray.str.zfill
+
+Datetimelike properties
+-----------------------
+
+**Datetime properties**:
+
+.. autosummary::
+   :toctree: generated/
+   :template: autosummary/accessor_attribute.rst
+
+   DataArray.dt.year
+   DataArray.dt.month
+   DataArray.dt.day
+   DataArray.dt.hour
+   DataArray.dt.minute
+   DataArray.dt.second
+   DataArray.dt.microsecond
+   DataArray.dt.nanosecond
+   DataArray.dt.weekofyear
+   DataArray.dt.week
+   DataArray.dt.dayofweek
+   DataArray.dt.weekday
+   DataArray.dt.weekday_name
+   DataArray.dt.dayofyear
+   DataArray.dt.quarter
+   DataArray.dt.days_in_month
+   DataArray.dt.daysinmonth
+   DataArray.dt.season
+   DataArray.dt.time
+   DataArray.dt.is_month_start
+   DataArray.dt.is_month_end
+   DataArray.dt.is_quarter_end
+   DataArray.dt.is_year_start
+   DataArray.dt.is_leap_year
+
+**Datetime methods**:
+
+.. autosummary::
+   :toctree: generated/
+   :template: autosummary/accessor_method.rst
+
+   DataArray.dt.floor
+   DataArray.dt.ceil
+   DataArray.dt.round
+   DataArray.dt.strftime
+
+**Timedelta properties**:
+
+.. autosummary::
+   :toctree: generated/
+   :template: autosummary/accessor_attribute.rst
+
+   DataArray.dt.days
+   DataArray.dt.seconds
+   DataArray.dt.microseconds
+   DataArray.dt.nanoseconds
+
+**Timedelta methods**:
+
+.. autosummary::
+   :toctree: generated/
+   :template: autosummary/accessor_method.rst
+
+   DataArray.dt.floor
+   DataArray.dt.ceil
+   DataArray.dt.round
+
+
 Reshaping and reorganizing
 --------------------------
 
@@ -406,6 +541,27 @@ Reshaping and reorganizing
    DataArray.sortby
    DataArray.broadcast_like
 
+Plotting
+--------
+
+.. autosummary::
+   :toctree: generated/
+   :template: autosummary/accessor_callable.rst
+
+   DataArray.plot
+
+.. autosummary::
+   :toctree: generated/
+   :template: autosummary/accessor_method.rst
+
+   DataArray.plot.contourf
+   DataArray.plot.contour
+   DataArray.plot.hist
+   DataArray.plot.imshow
+   DataArray.plot.line
+   DataArray.plot.pcolormesh
+   DataArray.plot.step
+
 .. _api.ufuncs:
 
 Universal functions
@@ -416,7 +572,9 @@ Universal functions
    With recent versions of numpy, dask and xarray, NumPy ufuncs are now
    supported directly on all xarray and dask objects. This obviates the need
    for the ``xarray.ufuncs`` module, which should not be used for new code
-   unless compatibility with versions of NumPy prior to v1.13 is required.
+   unless compatibility with versions of NumPy prior to v1.13 is
+   required. They will be removed once support for NumPy prior to
+   v1.17 is dropped.
 
 These functions are copied from NumPy, but extended to work on NumPy arrays,
 dask arrays and all xarray objects. You can find them in the ``xarray.ufuncs``
@@ -511,7 +669,6 @@ Dataset methods
    Dataset.load
    Dataset.chunk
    Dataset.unify_chunks
-   Dataset.map_blocks
    Dataset.filter_by_attrs
    Dataset.info
 
@@ -543,7 +700,6 @@ DataArray methods
    DataArray.load
    DataArray.chunk
    DataArray.unify_chunks
-   DataArray.map_blocks
 
 Coordinates objects
 ===================
@@ -652,25 +808,6 @@ Creating custom indexes
    :toctree: generated/
 
    cftime_range
-
-Plotting
-========
-
-.. autosummary::
-   :toctree: generated/
-
-   Dataset.plot
-   plot.scatter
-   DataArray.plot
-   plot.plot
-   plot.contourf
-   plot.contour
-   plot.hist
-   plot.imshow
-   plot.line
-   plot.pcolormesh
-   plot.step
-   plot.FacetGrid
 
 Faceting
 --------
