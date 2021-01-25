@@ -1037,7 +1037,7 @@ def to_netcdf(
     if isinstance(path_or_file, Path):
         path_or_file = str(path_or_file)
     if makedirs:
-        dirs = "/".join(path_or_file.split("/")[:-1])
+        dirs = Path(path_or_file).parent
         os.makedirs(dirs, exist_ok=True)
 
     if encoding is None:
