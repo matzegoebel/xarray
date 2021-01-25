@@ -246,6 +246,7 @@ class FacetGrid:
 
         if kwargs.get("cbar_ax", None) is not None:
             raise ValueError("cbar_ax not supported by FacetGrid.")
+        title_kws = kwargs.pop("title_kws", {})
 
         cmap_params, cbar_kwargs = _process_cmap_cbar_kwargs(
             func, self.data.values, **kwargs
@@ -280,7 +281,7 @@ class FacetGrid:
                 )
                 self._mappables.append(mappable)
 
-        self._finalize_grid(x, y)
+        self._finalize_grid(x, y, **title_kws)
 
         if kwargs.get("add_colorbar", True):
             self.add_colorbar(**cbar_kwargs)
@@ -291,6 +292,7 @@ class FacetGrid:
         self, func, x, y, hue, add_legend=True, _labels=None, **kwargs
     ):
         from .plot import _infer_line_data
+        title_kws = kwargs.pop("title_kws", {})
 
         for d, ax in zip(self.name_dicts.flat, self.axes.flat):
             # None is the sentinel value
@@ -314,7 +316,7 @@ class FacetGrid:
 
         self._hue_var = hueplt
         self._hue_label = huelabel
-        self._finalize_grid(xlabel, ylabel)
+        self._finalize_grid(xlabel, ylabel, **title_kws)
 
         if add_legend and hueplt is not None and huelabel is not None:
             self.add_legend()
@@ -328,6 +330,7 @@ class FacetGrid:
 
         kwargs["add_guide"] = False
         kwargs["_is_facetgrid"] = True
+        title_kws = kwargs.pop("title_kws", {})
 
         if kwargs.get("markersize", None):
             kwargs["size_mapping"] = _parse_size(
@@ -355,7 +358,7 @@ class FacetGrid:
                 # but maybe_mappable is a list in that case :/
                 self._mappables.append(maybe_mappable)
 
-        self._finalize_grid(meta_data["xlabel"], meta_data["ylabel"])
+        self._finalize_grid(meta_data["xlabel"], meta_data["ylabel"], **title_kws)
 
         if hue:
             self._hue_label = meta_data.pop("hue_label", None)
@@ -367,11 +370,11 @@ class FacetGrid:
 
         return self
 
-    def _finalize_grid(self, *axlabels):
+    def _finalize_grid(self, *axlabels, **title_kws):
         """Finalize the annotations and layout."""
         if not self._finalized:
             self.set_axis_labels(*axlabels)
-            self.set_titles()
+            self.set_titles(**title_kws)
             self.fig.tight_layout()
 
             for ax, namedict in zip(self.axes.flat, self.name_dicts.flat):
@@ -579,7 +582,7 @@ class FacetGrid:
 
         """
         plt = import_matplotlib_pyplot()
-
+        title_kws = kwargs.pop("title_kws", {})
         for ax, namedict in zip(self.axes.flat, self.name_dicts.flat):
             if namedict is not None:
                 data = self.data.loc[namedict]
@@ -591,7 +594,7 @@ class FacetGrid:
                 if maybe_mappable and hasattr(maybe_mappable, "autoscale_None"):
                     self._mappables.append(maybe_mappable)
 
-        self._finalize_grid(*args[:2])
+        self._finalize_grid(*args[:2], **title_kws)
 
         return self
 
