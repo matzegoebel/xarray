@@ -514,15 +514,9 @@ class _LocIndexer:
                 "can only set locations defined by dictionaries from Dataset.loc"
             )
 
-        # loop over dataset variables
-        for var, da in self.dataset.items():
-            val = value
-            if type(value) == xr.core.dataset.Dataset:
-                val = value[var]
-            # only set value if all dimensions are present
-            if all([k in da.dims for k in key.keys()]):
-                pos_indexers, _ = remap_label_indexers(da, key)
-                da[pos_indexers] = val
+        # set new values
+        pos_indexers, _ = remap_label_indexers(self.dataset, key)
+        self.dataset[pos_indexers] = value
 
 
 class Dataset(Mapping, ImplementsDatasetReduce, DataWithCoords):
@@ -1455,14 +1449,66 @@ class Dataset(Mapping, ImplementsDatasetReduce, DataWithCoords):
         variable.
         """
         if utils.is_dict_like(key):
-            # loop over dataset variables
-            for var, da in self.items():
-                val = value
-                if type(value) == xr.core.dataset.Dataset:
-                    val = value[var]
-                # only set value if all dimensions are present
-                if all([k in da.dims for k in key.keys()]):
-                    da[key] = val
+            from .dataarray import DataArray
+
+            # check for consistency first
+            if isinstance(value, Dataset):
+                missing_vars = [
+                    str(name) for name in value.data_vars if name not in self.data_vars
+                ]
+                if len(missing_vars) > 0:
+                    raise KeyError(
+                        "Variables {} in new values not available in dataset!".format(
+                            ",".join(missing_vars)
+                        )
+                    )
+            for name, var in self.items():
+                missing_keys = [k for k in key.keys() if k not in var.dims]
+                if len(missing_keys) > 0:
+                    raise KeyError(
+                        "Variable {} does not contain dimensions {}!".format(
+                            name, ",".join(missing_keys)
+                        )
+                    )
+
+                # test indexing
+                try:
+                    var_k = var[key]
+                except IndexError:
+                    raise IndexError(
+                        "Indexer {} not available in variable '{}'".format(key, name)
+                    )
+
+                if isinstance(value, Dataset):
+                    val = value[name]
+                else:
+                    val = value
+                if isinstance(val, DataArray):
+                    for dim in val.dims:
+                        coord1 = var_k[dim]
+                        coord2 = val[dim]
+                        if (len(coord1) != len(coord2)) or any(
+                            coord1.values != coord2.values
+                        ):
+                            raise IndexError(
+                                "Variable '{}': dimension coordinate '{}' conflicts"
+                                " between indexed and indexing objects: "
+                                " {}\n vs.\n {}".format(name, dim, coord2, coord1)
+                            )
+                elif isinstance(val, np.ndarray):
+                    try:
+                        np.broadcast_to(val, var_k.shape)
+                    except ValueError:
+                        raise ValueError(
+                            "Variable '{}': input array of shape {} cannot be broadcast"
+                            " to shape {}".format(name, val.shape, var_k.shape)
+                        )
+            # loop over dataset variables and set new values
+            for name, var in self.items():
+                if isinstance(value, Dataset):
+                    var[key] = value[name]
+                else:
+                    var[key] = value
         else:
             self.update({key: value})
 
