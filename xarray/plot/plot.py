@@ -219,6 +219,7 @@ def line(
     yticks=None,
     xlim=None,
     ylim=None,
+    second_axis=None,
     add_legend=True,
     _labels=True,
     **kwargs,
@@ -262,6 +263,9 @@ def line(
     yincrease : None, True, or False, optional
         Should the values on the y axes be increasing from top to bottom?
         if None, use the default for the matplotlib function.
+    second_axis : string, optional
+        Dimension or 1D coordinate that has the same size as x or y.
+        Plot secondary x- or y-axis using the given coordinate.
     add_legend : bool, optional
         Add legend with y axis coordinates (2D inputs only).
     *args, **kwargs : optional
@@ -301,6 +305,24 @@ def line(
     _ensure_plottable(xplt_val, yplt_val)
 
     primitive = ax.plot(xplt_val, yplt_val, *args, **kwargs)
+
+    if second_axis is not None:
+        if y is None:
+            xold = xplt_val
+            loc = "top"
+        else:
+            xold = yplt_val
+            loc = "right"
+        xnew = darray[second_axis]
+        forward = lambda x: np.interp(x, xold, xnew.values)
+        inverse = lambda x: np.interp(x, xnew.values, xold)
+        secax = ax.secondary_xaxis(loc, functions=(forward, inverse))
+        if _labels:
+            lab = label_from_attrs(xnew)
+            if y is None:
+                secax.set_xlabel(lab)
+            else:
+                secax.set_ylabel(lab)
 
     if _labels:
         if xlabel is not None:
