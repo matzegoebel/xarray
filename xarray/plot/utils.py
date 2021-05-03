@@ -468,7 +468,7 @@ def label_from_attrs(da, extra=""):
     else:
         units = ""
 
-    return "\n".join(textwrap.wrap(name + extra + units, 30))
+    return "\n".join(textwrap.wrap(name + extra + units, 60))
 
 
 def _interval_to_mid_points(array):
